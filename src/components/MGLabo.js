@@ -7,7 +7,14 @@ import "./AnalysesTable.css";
 const MgLabo = () => {
   const [analyses, setAnalyses] = useState([]);
   const [socket, setSocket] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState('connecting');
+  const [errorMessage, setErrorMessage] = useState('');
   const navigate = useNavigate();
+
+  // URL du backend selon l'environnement
+  const BACKEND_URL = process.env.NODE_ENV === 'production'
+    ? 'https://csr-backend-production.onrender.com'  // Production
+    : 'http://localhost:4600';                        // Développement local
 
   // Convertit le code numérique en texte (pour l'affichage initial)
   const mapLaboStatus = (code) => {
@@ -60,8 +67,59 @@ const MgLabo = () => {
   };
 
   useEffect(() => {
-    const newSocket = io("http://localhost:4600");
+    console.log('🔌 Tentative de connexion au backend:', BACKEND_URL);
+    console.log('🌍 Environnement:', process.env.NODE_ENV);
+    
+    const newSocket = io(BACKEND_URL, {
+      transports: ['polling', 'websocket'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      timeout: 20000,
+      path: '/socket.io/'
+    });
+
     setSocket(newSocket);
+
+    // Gestion des événements de connexion
+    newSocket.on('connect', () => {
+      console.log('✅ Connecté au serveur Socket.io');
+      setConnectionStatus('connected');
+      setErrorMessage('');
+      
+      // S'identifier comme service Laboratoire
+      newSocket.emit('user_identification', {
+        username: 'Labo',
+        service: 'Laboratoire'
+      });
+    });
+
+    newSocket.on('connect_error', (error) => {
+      console.error('❌ Erreur de connexion:', error.message);
+      setConnectionStatus('error');
+      setErrorMessage(`Impossible de se connecter au serveur: ${error.message}`);
+      
+      // Afficher plus d'informations pour le débogage
+      console.error('URL tentée:', BACKEND_URL);
+      console.error('Détails de l\'erreur:', error);
+    });
+
+    newSocket.on('disconnect', (reason) => {
+      console.log('🔌 Déconnecté:', reason);
+      setConnectionStatus('disconnected');
+      if (reason === 'io server disconnect') {
+        setErrorMessage('Déconnecté par le serveur');
+      }
+    });
+
+    newSocket.on('identification_confirmed', (data) => {
+      console.log('✅ Identification confirmée:', data.message);
+    });
+
+    newSocket.on('identification_failed', (data) => {
+      console.error('❌ Identification échouée:', data.message);
+      setErrorMessage(`Identification échouée: ${data.message}`);
+    });
 
     // Écouter les nouvelles analyses
     newSocket.on("nouveau_patient", (newData) => {
@@ -100,19 +158,32 @@ const MgLabo = () => {
       );
     });
 
+    // Écouter les messages généraux du serveur
+    newSocket.on('server_info', (data) => {
+      console.log('📡 Infos du serveur:', data);
+    });
+
     // Écouter les erreurs
     newSocket.on("error", (error) => {
       console.error("Erreur de socket:", error);
+      setErrorMessage(`Erreur Socket.io: ${error.message}`);
     });
 
     // Nettoyer à la déconnexion
     return () => {
-      newSocket.disconnect();
+      if (newSocket && newSocket.connected) {
+        newSocket.disconnect();
+      }
     };
   }, []);
 
   // Envoie les mises à jour au serveur
   const handleStatusChange = async (numID_CSR, newStatusText) => {
+    if (connectionStatus !== 'connected') {
+      setErrorMessage('Non connecté au serveur. Impossible de mettre à jour le statut.');
+      return;
+    }
+    
     const newCode = mapStatusToCode(newStatusText);
     
     console.log("Changement de statut:", { numID_CSR, newStatusText, newCode });
@@ -128,17 +199,19 @@ const MgLabo = () => {
     
     // Envoi au serveur avec numID_CSR
     try {
-      if (socket) {
+      if (socket && socket.connected) {
         socket.emit("update_status", {
           numID_CSR: numID_CSR,
           isLaboratorized: newCode
         });
         console.log("Statut envoyé au serveur");
       } else {
-        console.error("Socket non disponible");
+        console.error("Socket non disponible ou déconnecté");
+        setErrorMessage('Connexion perdue. Veuillez rafraîchir la page.');
       }
     } catch (error) {
       console.error("Erreur lors de l'envoi au serveur:", error);
+      setErrorMessage(`Erreur d'envoi: ${error.message}`);
       // Revertir en cas d'erreur
       setAnalyses(prev =>
         prev.map(item =>
@@ -157,6 +230,50 @@ const MgLabo = () => {
     }
   };
 
+  // Afficher l'état de connexion
+  const renderConnectionStatus = () => {
+    switch(connectionStatus) {
+      case 'connecting':
+        return (
+          <div className="connection-status connecting">
+            ⏳ Connexion au serveur en cours...
+          </div>
+        );
+      case 'connected':
+        return (
+          <div className="connection-status connected">
+            ✅ Connecté au serveur ({analyses.length} analyses)
+          </div>
+        );
+      case 'error':
+        return (
+          <div className="connection-status error">
+            ❌ {errorMessage}
+            <button 
+              onClick={() => window.location.reload()} 
+              className="retry-button"
+            >
+              🔄 Réessayer
+            </button>
+          </div>
+        );
+      case 'disconnected':
+        return (
+          <div className="connection-status disconnected">
+            ⚠️ Déconnecté du serveur
+            <button 
+              onClick={() => window.location.reload()} 
+              className="retry-button"
+            >
+              🔌 Reconnecter
+            </button>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
     <>
       <div className="entete TC">
@@ -171,6 +288,32 @@ const MgLabo = () => {
         </div>
       </div>
 
+      {/* Bandeau d'état de connexion */}
+      <div style={{ 
+        padding: '10px', 
+        margin: '10px 20px', 
+        borderRadius: '5px',
+        backgroundColor: connectionStatus === 'connected' ? '#d4edda' : 
+                        connectionStatus === 'error' ? '#f8d7da' : 
+                        connectionStatus === 'connecting' ? '#fff3cd' : '#ffeaa7',
+        color: connectionStatus === 'connected' ? '#155724' : 
+               connectionStatus === 'error' ? '#721c24' : 
+               connectionStatus === 'connecting' ? '#856404' : '#856404',
+        border: `1px solid ${
+          connectionStatus === 'connected' ? '#c3e6cb' : 
+          connectionStatus === 'error' ? '#f5c6cb' : 
+          connectionStatus === 'connecting' ? '#ffeaa7' : '#ffeaa7'
+        }`
+      }}>
+        {renderConnectionStatus()}
+        {connectionStatus === 'error' && (
+          <div style={{ marginTop: '10px', fontSize: '14px' }}>
+            <strong>URL du backend:</strong> {BACKEND_URL}<br />
+            <strong>Environnement:</strong> {process.env.NODE_ENV || 'development'}
+          </div>
+        )}
+      </div>
+
       <div className="table-container">
         <table className="analyses-table">
           <thead>
@@ -178,7 +321,6 @@ const MgLabo = () => {
               <th className="col-numero">N° Client</th>
               <th className="col-nom">Nom Patient</th>
               <th className="col-csr">CSR ID</th>
-
               <th className="col-examens">Examens Demandés</th>
               <th className="col-statut">Statut Laboratoire</th>
             </tr>
@@ -195,7 +337,6 @@ const MgLabo = () => {
                     <div className="examens-list">
                       {formaterExamens(item.examensSelectionnes || item.examensDetails)}
                     </div>
-                    
                   </td>
                   <td className="col-statut">
                     <select
@@ -204,6 +345,7 @@ const MgLabo = () => {
                         handleStatusChange(item.numID_CSR, e.target.value)
                       }
                       className={`etatLabo status-${mapLaboStatus(item.isLaboratorized).toLowerCase().replace(' ', '-')}`}
+                      disabled={connectionStatus !== 'connected'}
                     >
                       {["En attente", "En cours", "Terminé", "Annulé"].map(
                         (option) => (
@@ -221,11 +363,19 @@ const MgLabo = () => {
               ))
             ) : (
               <tr>
-                <td colSpan="6" className="no-data">
+                <td colSpan="5" className="no-data">
                   <div className="empty-state">
                     <span className="empty-icon">🔬</span>
-                    <h3>Aucune analyse en attente</h3>
-                    <p>Les nouvelles analyses apparaitront ici automatiquement</p>
+                    <h3>
+                      {connectionStatus === 'connected' 
+                        ? 'Aucune analyse en attente' 
+                        : 'En attente de connexion...'}
+                    </h3>
+                    <p>
+                      {connectionStatus === 'connected' 
+                        ? 'Les nouvelles analyses apparaitront ici automatiquement' 
+                        : 'Vérifiez la connexion au serveur'}
+                    </p>
                   </div>
                 </td>
               </tr>
@@ -234,6 +384,51 @@ const MgLabo = () => {
         </table>
       </div>
 
+      {/* Ajouter du CSS pour les états de connexion */}
+      <style>{`
+        .connection-status {
+          padding: 10px;
+          border-radius: 5px;
+          margin: 10px 0;
+          font-weight: bold;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .connection-status.connecting {
+          background-color: #fff3cd;
+          color: #856404;
+          border: 1px solid #ffeaa7;
+        }
+        .connection-status.connected {
+          background-color: #d4edda;
+          color: #155724;
+          border: 1px solid #c3e6cb;
+        }
+        .connection-status.error {
+          background-color: #f8d7da;
+          color: #721c24;
+          border: 1px solid #f5c6cb;
+        }
+        .connection-status.disconnected {
+          background-color: #ffeaa7;
+          color: #856404;
+          border: 1px solid #ffd166;
+        }
+        .retry-button {
+          margin-left: 10px;
+          padding: 5px 15px;
+          background-color: #007bff;
+          color: white;
+          border: none;
+          border-radius: 3px;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        .retry-button:hover {
+          background-color: #0056b3;
+        }
+      `}</style>
     </>
   );
 };
