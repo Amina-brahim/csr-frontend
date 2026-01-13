@@ -13,12 +13,12 @@ const MgLabo = () => {
 
   // URL du backend selon l'environnement
   const BACKEND_URL = process.env.NODE_ENV === 'production'
-    ? 'https://csr-backend-production.onrender.com'  // Production
-    : 'http://localhost:4600';                        // Développement local
+    ? 'https://csr-backend-production.onrender.com'
+    : 'http://localhost:4600';
 
-  // Convertit le code numérique en texte (pour l'affichage initial)
+  // Convertit le code numérique en texte
   const mapLaboStatus = (code) => {
-    if (typeof code === 'string') return code; // Déjà en texte
+    if (typeof code === 'string') return code;
     
     const statusMap = {
       0: "En attente",
@@ -29,7 +29,7 @@ const MgLabo = () => {
     return statusMap[code] || "En attente";
   };
 
-  // Convertit le texte en code numérique (pour l'envoi au serveur)
+  // Convertit le texte en code numérique
   const mapStatusToCode = (statusText) => {
     const statusMap = {
       "En attente": 0,
@@ -44,26 +44,11 @@ const MgLabo = () => {
   const formaterExamens = (examens) => {
     if (!examens || !Array.isArray(examens)) return 'Aucun examen';
     
-    // Si c'est un tableau d'objets
     if (examens.length > 0 && typeof examens[0] === 'object') {
       return examens.map(examen => examen.name || 'Examen inconnu').join(', ');
     }
     
-    // Si c'est un tableau de strings
     return examens.join(', ');
-  };
-
-  // Fonction pour formater les services
-  const formaterServices = (services) => {
-    if (!services || !Array.isArray(services)) return 'Aucun service';
-    
-    // Si c'est un tableau d'objets
-    if (services.length > 0 && typeof services[0] === 'object') {
-      return services.map(service => service.name || service.value || 'Service inconnu').join(', ');
-    }
-    
-    // Si c'est un tableau de strings
-    return services.join(', ');
   };
 
   useEffect(() => {
@@ -98,10 +83,6 @@ const MgLabo = () => {
       console.error('❌ Erreur de connexion:', error.message);
       setConnectionStatus('error');
       setErrorMessage(`Impossible de se connecter au serveur: ${error.message}`);
-      
-      // Afficher plus d'informations pour le débogage
-      console.error('URL tentée:', BACKEND_URL);
-      console.error('Détails de l\'erreur:', error);
     });
 
     newSocket.on('disconnect', (reason) => {
@@ -123,22 +104,19 @@ const MgLabo = () => {
 
     // Écouter les nouvelles analyses
     newSocket.on("nouveau_patient", (newData) => {
-      console.log("Nouveau patient reçu:", newData);
+      console.log("🆕 Labo: Nouveau patient reçu:", newData);
       setAnalyses((prevAnalyses) => {
-        // Vérifie si l'analyse existe déjà via numID_CSR
         const existingIndex = prevAnalyses.findIndex(
           (a) => a.numID_CSR === newData.numID_CSR
         );
 
         if (existingIndex >= 0) {
-          // Mise à jour si le patient existe
           const updatedAnalyses = [...prevAnalyses];
           updatedAnalyses[existingIndex] = newData;
-          console.log("Patient mis à jour:", updatedAnalyses[existingIndex]);
+          console.log("🔄 Labo: Patient mis à jour:", updatedAnalyses[existingIndex]);
           return updatedAnalyses;
         } else {
-          // Ajout cumulatif si nouveau patient
-          console.log("Nouveau patient ajouté:", newData);
+          console.log("➕ Labo: Nouveau patient ajouté:", newData);
           return [...prevAnalyses, newData];
         }
       });
@@ -146,11 +124,11 @@ const MgLabo = () => {
 
     // Écouter les mises à jour de statut du serveur
     newSocket.on("Etat Analyses Mis à Jour", (data) => {
-      console.log("Mise à jour reçue du serveur:", data);
+      console.log("📡 Labo: Mise à jour reçue du serveur:", data);
       setAnalyses(prev => 
         prev.map(item => {
           if (item.numID_CSR === data.numID_CSR) {
-            console.log("Item mis à jour:", data);
+            console.log("✅ Labo: Item mis à jour:", data);
             return { ...item, ...data };
           }
           return item;
@@ -158,14 +136,24 @@ const MgLabo = () => {
       );
     });
 
-    // Écouter les messages généraux du serveur
-    newSocket.on('server_info', (data) => {
-      console.log('📡 Infos du serveur:', data);
+    // Écouter les confirmations de mise à jour
+    newSocket.on("Mise à jour réussie", (data) => {
+      console.log("✅ Labo: Mise à jour confirmée par le serveur:", data);
     });
 
     // Écouter les erreurs
+    newSocket.on("update_error", (error) => {
+      console.error("❌ Labo: Erreur de mise à jour:", error);
+      setErrorMessage(`Erreur de mise à jour: ${error.message}`);
+    });
+
+    // Écouter les messages généraux du serveur
+    newSocket.on('server_info', (data) => {
+      console.log('📡 Labo: Infos du serveur:', data);
+    });
+
     newSocket.on("error", (error) => {
-      console.error("Erreur de socket:", error);
+      console.error("❌ Labo: Erreur de socket:", error);
       setErrorMessage(`Erreur Socket.io: ${error.message}`);
     });
 
@@ -186,47 +174,68 @@ const MgLabo = () => {
     
     const newCode = mapStatusToCode(newStatusText);
     
-    console.log("Changement de statut:", { numID_CSR, newStatusText, newCode });
+    // Trouver le patient pour avoir son nom
+    const patient = analyses.find(a => a.numID_CSR === numID_CSR);
+    
+    console.log("🔧 Labo: Changement de statut:", { 
+      numID_CSR, 
+      newStatusText, 
+      newCode,
+      patientName: patient?.nomClient || 'Inconnu'
+    });
     
     // Mise à jour optimiste locale
     setAnalyses(prev =>
-      prev.map(item =>
-        item.numID_CSR === numID_CSR
-          ? { ...item, isLaboratorized: newStatusText }
-          : item
-      )
+        prev.map(item =>
+            item.numID_CSR === numID_CSR
+                ? { 
+                    ...item, 
+                    isLaboratorized: newStatusText,
+                    lastUpdate: new Date().toISOString()
+                }
+                : item
+        )
     );
     
     // Envoi au serveur avec numID_CSR
     try {
-      if (socket && socket.connected) {
-        socket.emit("update_status", {
-          numID_CSR: numID_CSR,
-          isLaboratorized: newCode
-        });
-        console.log("Statut envoyé au serveur");
-      } else {
-        console.error("Socket non disponible ou déconnecté");
-        setErrorMessage('Connexion perdue. Veuillez rafraîchir la page.');
-      }
+        if (socket && socket.connected) {
+            console.log("📤 Labo: Envoi de la mise à jour au serveur...");
+            
+            socket.emit("update_status", {
+                numID_CSR: numID_CSR,
+                numClient: patient?.numClient,
+                isLaboratorized: newCode,
+                patientName: patient?.nomClient
+            });
+            
+            console.log("✅ Labo: Statut envoyé au serveur pour diffusion aux journaux");
+            
+            // Afficher un message de confirmation
+            setErrorMessage(`✅ Statut "${newStatusText}" envoyé pour ${patient?.nomClient || 'le patient'}`);
+            setTimeout(() => setErrorMessage(''), 3000);
+        } else {
+            console.error("❌ Labo: Socket non disponible ou déconnecté");
+            setErrorMessage('Connexion perdue. Veuillez rafraîchir la page.');
+        }
     } catch (error) {
-      console.error("Erreur lors de l'envoi au serveur:", error);
-      setErrorMessage(`Erreur d'envoi: ${error.message}`);
-      // Revertir en cas d'erreur
-      setAnalyses(prev =>
-        prev.map(item =>
-          item.numID_CSR === numID_CSR
-            ? { ...item, isLaboratorized: item.isLaboratorized }
-            : item
-        )
-      );
+        console.error("❌ Labo: Erreur lors de l'envoi au serveur:", error);
+        setErrorMessage(`Erreur d'envoi: ${error.message}`);
+        // Revertir en cas d'erreur
+        setAnalyses(prev =>
+            prev.map(item =>
+                item.numID_CSR === numID_CSR
+                    ? { ...item, isLaboratorized: item.isLaboratorized }
+                    : item
+            )
+        );
     }
     
     if (newStatusText === "Terminé") {
-      // Suppression de l'analyse lorsqu'elle est terminée après un court délai
-      setTimeout(() => {
-        setAnalyses(prev => prev.filter(item => item.numID_CSR !== numID_CSR));
-      }, 500);
+        // Suppression de l'analyse lorsqu'elle est terminée après un court délai
+        setTimeout(() => {
+            setAnalyses(prev => prev.filter(item => item.numID_CSR !== numID_CSR));
+        }, 1000);
     }
   };
 
@@ -242,7 +251,12 @@ const MgLabo = () => {
       case 'connected':
         return (
           <div className="connection-status connected">
-            ✅ Connecté au serveur ({analyses.length} analyses)
+            ✅ Connecté au serveur ({analyses.length} analyses en attente)
+            {errorMessage && (
+              <div style={{ fontSize: '14px', marginTop: '5px', color: '#28a745' }}>
+                {errorMessage}
+              </div>
+            )}
           </div>
         );
       case 'error':
@@ -306,10 +320,9 @@ const MgLabo = () => {
         }`
       }}>
         {renderConnectionStatus()}
-        {connectionStatus === 'error' && (
+        {connectionStatus === 'connected' && analyses.length > 0 && (
           <div style={{ marginTop: '10px', fontSize: '14px' }}>
-            <strong>URL du backend:</strong> {BACKEND_URL}<br />
-            <strong>Environnement:</strong> {process.env.NODE_ENV || 'development'}
+            <strong>📢 Info:</strong> Les changements de statut sont automatiquement envoyés aux journaux
           </div>
         )}
       </div>
@@ -376,12 +389,35 @@ const MgLabo = () => {
                         ? 'Les nouvelles analyses apparaitront ici automatiquement' 
                         : 'Vérifiez la connexion au serveur'}
                     </p>
+                    {connectionStatus === 'connected' && (
+                      <div style={{ marginTop: '10px', fontSize: '14px', color: '#666' }}>
+                        <p>ℹ️ Les analyses terminées sont automatiquement retirées de la liste</p>
+                        <p>🔄 Les changements de statut sont envoyés en temps réel aux journaux</p>
+                      </div>
+                    )}
                   </div>
                 </td>
               </tr>
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* Instructions */}
+      <div style={{
+        margin: '20px',
+        padding: '15px',
+        backgroundColor: '#f8f9fa',
+        borderRadius: '5px',
+        borderLeft: '4px solid #007bff'
+      }}>
+        <h4>📋 Instructions d'utilisation:</h4>
+        <ul style={{ textAlign: 'left', marginLeft: '20px' }}>
+          <li>Sélectionnez le statut dans la liste déroulante pour chaque patient</li>
+          <li>Les changements sont automatiquement envoyés au serveur</li>
+          <li>Les journaux sont mis à jour en temps réel</li>
+          <li>Les analyses "Terminé" sont automatiquement retirées de la liste</li>
+        </ul>
       </div>
 
       {/* Ajouter du CSS pour les états de connexion */}
@@ -391,9 +427,6 @@ const MgLabo = () => {
           border-radius: 5px;
           margin: 10px 0;
           font-weight: bold;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
         }
         .connection-status.connecting {
           background-color: #fff3cd;
@@ -427,6 +460,35 @@ const MgLabo = () => {
         }
         .retry-button:hover {
           background-color: #0056b3;
+        }
+        .etatLabo {
+          padding: 8px 12px;
+          border-radius: 4px;
+          border: 1px solid #ddd;
+          font-size: 14px;
+          cursor: pointer;
+          width: 100%;
+        }
+        .etatLabo.status-en-attente {
+          background-color: #f8f9fa;
+          color: #6c757d;
+        }
+        .etatLabo.status-en-cours {
+          background-color: #fff3cd;
+          color: #856404;
+        }
+        .etatLabo.status-terminé {
+          background-color: #d4edda;
+          color: #155724;
+        }
+        .etatLabo.status-annulé {
+          background-color: #f8d7da;
+          color: #721c24;
+        }
+        .status-indicator {
+          margin-top: 5px;
+          font-size: 12px;
+          font-weight: bold;
         }
       `}</style>
     </>
