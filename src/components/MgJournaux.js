@@ -24,6 +24,7 @@ const MgJournaux = ({ socket }) => {
       console.log('✅ MgJournaux: Socket connecté');
       setConnectionStatus('connected');
       setErreur(null);
+      chargerDonneesDuServeur(); // Charger les données après connexion
     };
 
     const handleDisconnect = () => {
@@ -92,8 +93,8 @@ const MgJournaux = ({ socket }) => {
     ).join(', ');
   };
 
-  // Récupérer les données depuis le serveur - CORRECTION: utiliser le bon événement
-  useEffect(() => {
+  // Fonction pour charger les données du serveur
+  const chargerDonneesDuServeur = () => {
     if (!socket || !socket.connected) {
       setErreur("Non connecté au serveur. Veuillez rafraîchir la page.");
       setChargement(false);
@@ -105,8 +106,8 @@ const MgJournaux = ({ socket }) => {
     
     console.log('📥 MgJournaux: Demande des données du journal...');
     
-    // CORRECTION: Utiliser l'événement CORRECT que le serveur attend
-    socket.emit('recuperer_donnees', (response) => {
+    // CORRECTION : Utiliser l'événement dédié pour le journal
+    socket.emit('recuperer_donnees_journal', (response) => {
       console.log('📥 MgJournaux: Réponse du serveur:', response);
       
       if (response && response.success && response.donnees) {
@@ -116,7 +117,6 @@ const MgJournaux = ({ socket }) => {
         // Formater les données pour les journaux
         const donneesFormatees = donneesRecues.map(item => ({
           ...item,
-          // Assurer que les champs critiques existent
           nomClient: item.nomClient || 'Non spécifié',
           numID_CSR: item.numID_CSR || 'N/A',
           numClient: item.numClient || 'N/A',
@@ -130,6 +130,11 @@ const MgJournaux = ({ socket }) => {
         
         setDonnees(donneesFormatees);
         setErreur(null);
+        
+        // Re-filtrer si un service est sélectionné
+        if (serviceSelectionne) {
+          filtrerDonneesParService(serviceSelectionne, donneesFormatees);
+        }
       } else {
         const errorMsg = response?.error || response?.message || "Erreur lors de la récupération des données";
         console.error('❌ MgJournaux:', errorMsg);
@@ -137,8 +142,37 @@ const MgJournaux = ({ socket }) => {
       }
       setChargement(false);
     });
+  };
 
-    // Écouter également les nouvelles données en temps réel
+  // Fonction pour filtrer les données par service
+  const filtrerDonneesParService = (service, donneesAFiltrer = donnees) => {
+    const donneesFiltrees = donneesAFiltrer.filter(item => {
+      const services = item.servicesSelectionnes || [];
+      return services.some(s => {
+        if (typeof s === 'object') {
+          return s.value === service || s.name?.toLowerCase().includes(service.toLowerCase());
+        }
+        return s === service || s.toLowerCase().includes(service.toLowerCase());
+      });
+    });
+    
+    console.log(`✅ MgJournaux: ${donneesFiltrees.length} résultats pour ${service}`);
+    
+    setDonneesFiltrees(donneesFiltrees);
+  };
+
+  // Récupérer les données depuis le serveur
+  useEffect(() => {
+    if (!socket || !socket.connected) {
+      setErreur("Non connecté au serveur. Veuillez rafraîchir la page.");
+      setChargement(false);
+      return;
+    }
+
+    // Charger initialement les données
+    chargerDonneesDuServeur();
+
+    // Écouter les nouvelles données en temps réel
     const handleNouveauPatient = (newData) => {
       console.log('📥 MgJournaux: Nouveau patient reçu:', newData);
       setDonnees(prev => {
@@ -151,17 +185,100 @@ const MgJournaux = ({ socket }) => {
         }
         return [...prev, newData];
       });
+      
+      // Re-filtrer si un service est sélectionné
+      if (serviceSelectionne) {
+        filtrerDonneesParService(serviceSelectionne);
+      }
+    };
+
+    // CORRECTION CRITIQUE : Écouter les mises à jour de statut depuis le labo
+    const handleJournalStatusUpdate = (updateData) => {
+      console.log('📊 MgJournaux: Mise à jour de statut reçue:', updateData);
+      
+      setDonnees(prev => prev.map(item => {
+        if (item.numID_CSR === updateData.patientId) {
+          console.log(`✅ MgJournaux: Mise à jour du patient ${updateData.patientName} (${updateData.newStatus})`);
+          return {
+            ...item,
+            isLaboratorized: updateData.newStatus,
+            lastUpdate: updateData.updatedAt
+          };
+        }
+        return item;
+      }));
+      
+      // Re-filtrer si un service est sélectionné
+      if (serviceSelectionne) {
+        filtrerDonneesParService(serviceSelectionne);
+      }
+    };
+
+    // CORRECTION : Écouter les mises à jour complètes des données patient
+    const handlePatientDataUpdated = (updatedPatient) => {
+      console.log('📊 MgJournaux: Données patient mises à jour:', updatedPatient);
+      
+      setDonnees(prev => {
+        const existingIndex = prev.findIndex(item => item.numID_CSR === updatedPatient.numID_CSR);
+        
+        if (existingIndex >= 0) {
+          const updated = [...prev];
+          updated[existingIndex] = {
+            ...updated[existingIndex],
+            ...updatedPatient,
+            isLaboratorized: updatedPatient.isLaboratorized || 'En attente'
+          };
+          return updated;
+        }
+        return prev;
+      });
+      
+      // Re-filtrer si un service est sélectionné
+      if (serviceSelectionne) {
+        filtrerDonneesParService(serviceSelectionne);
+      }
+    };
+
+    // CORRECTION : Écouter les événements de statut du labo
+    const handleEtatAnalysesMisAJour = (data) => {
+      console.log('📊 MgJournaux: État analyses mis à jour reçu:', data);
+      
+      setDonnees(prev => {
+        const existingIndex = prev.findIndex(item => item.numID_CSR === data.numID_CSR);
+        
+        if (existingIndex >= 0) {
+          const updated = [...prev];
+          updated[existingIndex] = {
+            ...updated[existingIndex],
+            isLaboratorized: data.isLaboratorized || 'En attente',
+            updatedAt: data.updatedAt || new Date().toISOString()
+          };
+          return updated;
+        }
+        return prev;
+      });
+      
+      // Re-filtrer si un service est sélectionné
+      if (serviceSelectionne) {
+        filtrerDonneesParService(serviceSelectionne);
+      }
     };
 
     socket.on('nouveau_patient_journal', handleNouveauPatient);
     socket.on('nouveau_patient', handleNouveauPatient);
+    socket.on('journal_status_update', handleJournalStatusUpdate); // AJOUTER
+    socket.on('patient_data_updated', handlePatientDataUpdated); // AJOUTER
+    socket.on('Etat Analyses Mis à Jour', handleEtatAnalysesMisAJour); // AJOUTER
 
-    // Nettoyer l'écouteur
+    // Nettoyer les écouteurs
     return () => {
       socket.off('nouveau_patient_journal', handleNouveauPatient);
       socket.off('nouveau_patient', handleNouveauPatient);
+      socket.off('journal_status_update', handleJournalStatusUpdate);
+      socket.off('patient_data_updated', handlePatientDataUpdated);
+      socket.off('Etat Analyses Mis à Jour', handleEtatAnalysesMisAJour);
     };
-  }, [socket]);
+  }, [socket, serviceSelectionne]);
 
   // Fonction pour récupérer les données d'un service spécifique
   const afficherDonneesService = (service) => {
@@ -305,10 +422,14 @@ const MgJournaux = ({ socket }) => {
           }`
         }}>
           {renderConnectionStatus()}
-          {connectionStatus === 'error' && socket && (
+          {connectionStatus === 'connected' && (
             <div style={{ marginTop: '10px', fontSize: '14px' }}>
-              <strong>État Socket:</strong> {socket.connected ? 'Connecté' : 'Déconnecté'}<br />
-              <strong>Socket ID:</strong> {socket.id ? socket.id.substring(0, 8) + '...' : 'N/A'}
+              <strong>Mises à jour en temps réel: </strong>Actives ✅
+              <div style={{ marginTop: '5px' }}>
+                <button onClick={chargerDonneesDuServeur} className="retry-button">
+                  🔄 Rafraîchir les données
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -320,7 +441,7 @@ const MgJournaux = ({ socket }) => {
             <div className="spinner"></div>
             Chargement des données...
             <div style={{ fontSize: '12px', marginTop: '10px', color: '#666' }}>
-              Émission de l'événement: recuperer_donnees
+              Écoute des mises à jour en temps réel...
             </div>
           </div>
         )}
@@ -431,6 +552,7 @@ const MgJournaux = ({ socket }) => {
               
               <div style={{ marginTop: '20px', fontSize: '14px', color: '#666', fontStyle: 'italic' }}>
                 <p>⚠️ Ces journaux concernent les travaux de la clinique. Veuillez être attentif lors de la vérification pour des raisons de sécurité.</p>
+                <p>🔄 Les mises à jour du laboratoire sont reçues en temps réel.</p>
               </div>
             </div>
           </div>
@@ -451,6 +573,13 @@ const MgJournaux = ({ socket }) => {
                 >
                   📥 Exporter JSON
                 </button>
+                <button 
+                  className="btn-refresh" 
+                  onClick={chargerDonneesDuServeur}
+                  style={{ marginLeft: '10px' }}
+                >
+                  🔄 Rafraîchir
+                </button>
               </div>
             </div>
             
@@ -468,7 +597,7 @@ const MgJournaux = ({ socket }) => {
                         <th style={{ padding: '10px', border: '1px solid #ddd' }}>Examens</th>
                         <th style={{ padding: '10px', border: '1px solid #ddd' }}>Total</th>
                         <th style={{ padding: '10px', border: '1px solid #ddd' }}>Caissier</th>
-                        <th style={{ padding: '10px', border: '1px solid #ddd' }}>Statut</th>
+                        <th style={{ padding: '10px', border: '1px solid #ddd' }}>Statut Laboratoire</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -515,6 +644,9 @@ const MgJournaux = ({ socket }) => {
                   </p>
                   <p>
                     <strong>Dernière mise à jour:</strong> {new Date().toLocaleDateString('fr-FR')} à {new Date().toLocaleTimeString('fr-FR')}
+                  </p>
+                  <p style={{ color: '#28a745', fontWeight: 'bold' }}>
+                    🔄 Mises à jour en temps réel activées
                   </p>
                 </div>
               </div>
@@ -579,6 +711,18 @@ const MgJournaux = ({ socket }) => {
         .bouton-service:disabled {
           opacity: 0.5;
           cursor: not-allowed;
+        }
+        .btn-refresh {
+          padding: 8px 15px;
+          background-color: #17a2b8;
+          color: white;
+          border: none;
+          border-radius: 3px;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        .btn-refresh:hover {
+          background-color: #138496;
         }
       `}</style>
     </>
