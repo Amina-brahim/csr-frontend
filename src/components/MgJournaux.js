@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from "react-router-dom";
 import LogoCsr from './images/logo_csr.png';
 import '../caisse.css';
@@ -11,13 +11,8 @@ const MgJournaux = ({ socket }) => {
   const [donneesFiltrees, setDonneesFiltrees] = useState([]);
   const [serviceSelectionne, setServiceSelectionne] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState(socket?.connected ? 'connected' : 'disconnected');
-  const [derniereMiseAJour, setDerniereMiseAJour] = useState(null);
-  const [updatesCount, setUpdatesCount] = useState(0);
 
-  // ==========================================================================
-  // GESTION DE LA CONNEXION SOCKET
-  // ==========================================================================
-
+  // Surveiller l'état de la connexion socket
   useEffect(() => {
     if (!socket) {
       setErreur("Socket non disponible");
@@ -43,10 +38,12 @@ const MgJournaux = ({ socket }) => {
       setErreur(`Erreur de connexion: ${error.message}`);
     };
 
+    // Écouter les événements de connexion
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('connect_error', handleConnectError);
 
+    // Nettoyer les écouteurs
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
@@ -54,10 +51,7 @@ const MgJournaux = ({ socket }) => {
     };
   }, [socket]);
 
-  // ==========================================================================
-  // FONCTIONS UTILITAIRES
-  // ==========================================================================
-
+  // Fonction pour formater la date de manière sécurisée
   const formaterDate = (patient) => {
     const dateSource = patient.dateCreation || 
                       patient.dateModification || 
@@ -77,6 +71,7 @@ const MgJournaux = ({ socket }) => {
     }
   };
 
+  // Fonction pour formater les services
   const formaterServices = (services) => {
     if (!services || !Array.isArray(services)) return 'Aucun service';
     
@@ -88,6 +83,7 @@ const MgJournaux = ({ socket }) => {
     }).join(', ');
   };
 
+  // Fonction pour formater les examens
   const formaterExamens = (examens) => {
     if (!examens || !Array.isArray(examens)) return 'Aucun examen';
     
@@ -96,168 +92,7 @@ const MgJournaux = ({ socket }) => {
     ).join(', ');
   };
 
-  // ==========================================================================
-  // ÉCOUTEURS POUR LES MISES À JOUR EN TEMPS RÉEL
-  // ==========================================================================
-
-  const setupRealtimeListeners = useCallback((socketInstance) => {
-    if (!socketInstance) return;
-
-    console.log('👂 MgJournaux: Configuration des écouteurs temps réel');
-
-    // 1. ÉCOUTEUR PRINCIPAL POUR LES MISES À JOUR DE STATUT
-    const handleStatutMisAJour = (updateData) => {
-      console.log('📢 MgJournaux: Mise à jour de statut reçue:', updateData);
-      setUpdatesCount(prev => prev + 1);
-      setDerniereMiseAJour(new Date().toISOString());
-
-      setDonnees(prev => {
-        const updated = prev.map(item => {
-          // Vérifier par numID_CSR ou numClient
-          const matchByCSR = item.numID_CSR && updateData.numID_CSR && 
-                           item.numID_CSR === updateData.numID_CSR;
-          const matchByClient = item.numClient && updateData.patientId && 
-                              item.numClient == updateData.patientId;
-          
-          if (matchByCSR || matchByClient) {
-            console.log(`✅ MgJournaux: Mise à jour du patient "${item.nomClient}"`, 
-                       `Ancien: "${item.isLaboratorized}" → Nouveau: "${updateData.nouveauStatut}"`);
-            
-            return {
-              ...item,
-              isLaboratorized: updateData.nouveauStatut,
-              lastUpdate: updateData.timestamp,
-              ...(updateData.patientData || {})
-            };
-          }
-          return item;
-        });
-        
-        return updated;
-      });
-
-      // Mettre à jour aussi les données filtrées si actives
-      if (serviceSelectionne && donneesFiltrees.length > 0) {
-        setDonneesFiltrees(prev => prev.map(item => {
-          const matchByCSR = item.numID_CSR && updateData.numID_CSR && 
-                           item.numID_CSR === updateData.numID_CSR;
-          const matchByClient = item.numClient && updateData.patientId && 
-                              item.numClient == updateData.patientId;
-          
-          if (matchByCSR || matchByClient) {
-            return {
-              ...item,
-              isLaboratorized: updateData.nouveauStatut,
-              lastUpdate: updateData.timestamp
-            };
-          }
-          return item;
-        }));
-      }
-    };
-
-    // 2. ÉCOUTEUR POUR LES MISES À JOUR GÉNÉRALES DU LABORATOIRE
-    const handleEtatAnalysesMisAJour = (patientData) => {
-      console.log('🔬 MgJournaux: Mise à jour du labo reçue:', patientData);
-      
-      setDonnees(prev => {
-        const updated = prev.map(item => {
-          if (item.numID_CSR === patientData.numID_CSR || 
-              item.numClient == patientData.numClient) {
-            console.log(`🔄 MgJournaux: Synchronisation avec labo pour "${item.nomClient}"`);
-            return { ...item, ...patientData };
-          }
-          return item;
-        });
-        
-        // Si nouveau patient, l'ajouter
-        const exists = prev.some(item => 
-          item.numID_CSR === patientData.numID_CSR || 
-          item.numClient == patientData.numClient
-        );
-        
-        if (!exists && patientData.nomClient) {
-          console.log(`➕ MgJournaux: Nouveau patient ajouté depuis labo: "${patientData.nomClient}"`);
-          return [...prev, patientData];
-        }
-        
-        return updated;
-      });
-    };
-
-    // 3. ÉCOUTEUR POUR LES NOUVEAUX PATIENTS
-    const handleNouveauPatient = (newPatient) => {
-      console.log('📥 MgJournaux: Nouveau patient reçu:', newPatient);
-      setDerniereMiseAJour(new Date().toISOString());
-      
-      setDonnees(prev => {
-        // Éviter les doublons
-        const exists = prev.some(item => item.numID_CSR === newPatient.numID_CSR);
-        if (!exists) {
-          return [...prev, newPatient];
-        }
-        return prev;
-      });
-    };
-
-    // 4. ÉCOUTEUR POUR LES SUPPRESSIONS
-    const handlePatientDeleted = (data) => {
-      console.log('🗑️ MgJournaux: Patient supprimé:', data.patientId);
-      
-      setDonnees(prev => prev.filter(item => item.numID_CSR !== data.patientId));
-      setDonneesFiltrees(prev => prev.filter(item => item.numID_CSR !== data.patientId));
-    };
-
-    // 5. ÉCOUTEUR POUR LES MISES À JOUR GÉNÉRALES
-    const handlePatientDataUpdated = (data) => {
-      console.log('🔄 MgJournaux: Données patient mises à jour:', data);
-      if (data.data && data.data.numID_CSR) {
-        setDonnees(prev => prev.map(item => 
-          item.numID_CSR === data.data.numID_CSR ? { ...item, ...data.data } : item
-        ));
-      }
-    };
-
-    // Enregistrer tous les écouteurs
-    socketInstance.on('statut_patient_mis_a_jour', handleStatutMisAJour);
-    socketInstance.on('Etat Analyses Mis à Jour', handleEtatAnalysesMisAJour);
-    socketInstance.on('nouveau_patient_journal', handleNouveauPatient);
-    socketInstance.on('nouveau_patient', handleNouveauPatient);
-    socketInstance.on('patient_deleted', handlePatientDeleted);
-    socketInstance.on('patient_data_updated', handlePatientDataUpdated);
-
-    // Écouteurs spécifiques par service
-    const services = ['laboratoire', 'consultation', 'echographie', 'hospitalisation', 
-                      'chirurgie', 'kinesitherapie', 'fibroscopie'];
-    
-    services.forEach(service => {
-      socketInstance.on(`journal_update_${service}`, (data) => {
-        if (serviceSelectionne === service) {
-          console.log(`📋 Journal ${service}: Mise à jour spécifique reçue`, data);
-          handleStatutMisAJour(data);
-        }
-      });
-    });
-
-    // Nettoyage des écouteurs
-    return () => {
-      socketInstance.off('statut_patient_mis_a_jour', handleStatutMisAJour);
-      socketInstance.off('Etat Analyses Mis à Jour', handleEtatAnalysesMisAJour);
-      socketInstance.off('nouveau_patient_journal', handleNouveauPatient);
-      socketInstance.off('nouveau_patient', handleNouveauPatient);
-      socketInstance.off('patient_deleted', handlePatientDeleted);
-      socketInstance.off('patient_data_updated', handlePatientDataUpdated);
-      
-      services.forEach(service => {
-        socketInstance.off(`journal_update_${service}`);
-      });
-    };
-  }, [serviceSelectionne, donneesFiltrees]);
-
-  // ==========================================================================
-  // CHARGEMENT INITIAL DES DONNÉES
-  // ==========================================================================
-
+  // Récupérer les données depuis le serveur - CORRECTION: utiliser le bon événement
   useEffect(() => {
     if (!socket || !socket.connected) {
       setErreur("Non connecté au serveur. Veuillez rafraîchir la page.");
@@ -270,7 +105,7 @@ const MgJournaux = ({ socket }) => {
     
     console.log('📥 MgJournaux: Demande des données du journal...');
     
-    // Charger les données initiales
+    // CORRECTION: Utiliser l'événement CORRECT que le serveur attend
     socket.emit('recuperer_donnees', (response) => {
       console.log('📥 MgJournaux: Réponse du serveur:', response);
       
@@ -278,8 +113,10 @@ const MgJournaux = ({ socket }) => {
         const donneesRecues = response.donnees || [];
         console.log(`✅ MgJournaux: ${donneesRecues.length} patients chargés`);
         
+        // Formater les données pour les journaux
         const donneesFormatees = donneesRecues.map(item => ({
           ...item,
+          // Assurer que les champs critiques existent
           nomClient: item.nomClient || 'Non spécifié',
           numID_CSR: item.numID_CSR || 'N/A',
           numClient: item.numClient || 'N/A',
@@ -293,22 +130,6 @@ const MgJournaux = ({ socket }) => {
         
         setDonnees(donneesFormatees);
         setErreur(null);
-        
-        // Configurer les écouteurs temps réel
-        const cleanup = setupRealtimeListeners(socket);
-        
-        // S'abonner aux mises à jour des journaux
-        socket.emit('get_journal_updates', 'all', (response) => {
-          if (response && response.success) {
-            console.log('✅ MgJournaux: Abonné aux mises à jour des journaux');
-          }
-        });
-        
-        // Nettoyage
-        return () => {
-          if (cleanup) cleanup();
-        };
-        
       } else {
         const errorMsg = response?.error || response?.message || "Erreur lors de la récupération des données";
         console.error('❌ MgJournaux:', errorMsg);
@@ -316,12 +137,33 @@ const MgJournaux = ({ socket }) => {
       }
       setChargement(false);
     });
-  }, [socket, setupRealtimeListeners]);
 
-  // ==========================================================================
-  // FONCTIONS D'INTERACTION
-  // ==========================================================================
+    // Écouter également les nouvelles données en temps réel
+    const handleNouveauPatient = (newData) => {
+      console.log('📥 MgJournaux: Nouveau patient reçu:', newData);
+      setDonnees(prev => {
+        // Éviter les doublons
+        const existingIndex = prev.findIndex(item => item.numID_CSR === newData.numID_CSR);
+        if (existingIndex >= 0) {
+          const updated = [...prev];
+          updated[existingIndex] = { ...updated[existingIndex], ...newData };
+          return updated;
+        }
+        return [...prev, newData];
+      });
+    };
 
+    socket.on('nouveau_patient_journal', handleNouveauPatient);
+    socket.on('nouveau_patient', handleNouveauPatient);
+
+    // Nettoyer l'écouteur
+    return () => {
+      socket.off('nouveau_patient_journal', handleNouveauPatient);
+      socket.off('nouveau_patient', handleNouveauPatient);
+    };
+  }, [socket]);
+
+  // Fonction pour récupérer les données d'un service spécifique
   const afficherDonneesService = (service) => {
     if (!socket || !socket.connected) {
       setErreur("Non connecté au serveur. Impossible de charger les données.");
@@ -333,9 +175,10 @@ const MgJournaux = ({ socket }) => {
     
     console.log(`🔍 MgJournaux: Filtrage pour le service ${service}...`);
     
-    // Filtrer localement les données
+    // Filtrer localement les données pour le service sélectionné
     const donneesFiltrees = donnees.filter(item => {
       const services = item.servicesSelectionnes || [];
+      // Vérifier dans différentes structures possibles
       return services.some(s => {
         if (typeof s === 'object') {
           return s.value === service || s.name?.toLowerCase().includes(service.toLowerCase());
@@ -351,6 +194,7 @@ const MgJournaux = ({ socket }) => {
     setChargement(false);
   };
 
+  // Fonction pour créer un fichier JSON pour un service spécifique
   const creerFichierJSON = (service) => {
     const donneesService = donneesFiltrees.length > 0 ? donneesFiltrees : 
       donnees.filter(item => {
@@ -368,7 +212,10 @@ const MgJournaux = ({ socket }) => {
       return;
     }
     
+    // Créer un objet JSON avec les données
     const jsonData = JSON.stringify(donneesService, null, 2);
+    
+    // Créer un blob et un lien de téléchargement
     const blob = new Blob([jsonData], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -379,33 +226,28 @@ const MgJournaux = ({ socket }) => {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     
+    // Informer l'utilisateur
     alert(`Journal ${service} exporté avec succès! (${donneesService.length} enregistrements)`);
   };
 
-  const retour = () => navigate(-1);
+  // Fonction pour retourner à la page précédente
+  const retour = () => {
+    navigate(-1);
+  };
+
+  // Fonction pour retourner à la sélection des services
   const retourSelection = () => {
     setServiceSelectionne(null);
     setDonneesFiltrees([]);
   };
 
-  // ==========================================================================
-  // RENDU
-  // ==========================================================================
-
+  // Afficher l'état de connexion
   const renderConnectionStatus = () => {
     switch(connectionStatus) {
       case 'connected':
         return (
           <div className="connection-status connected">
-            ✅ Connecté au serveur 
-            <span style={{ marginLeft: '10px', fontSize: '12px' }}>
-              ({donnees.length} patients • {updatesCount} mise{updatesCount !== 1 ? 's' : ''} à jour)
-            </span>
-            {derniereMiseAJour && (
-              <span style={{ marginLeft: '10px', fontSize: '12px', opacity: 0.7 }}>
-                Dernière: {new Date(derniereMiseAJour).toLocaleTimeString('fr-FR')}
-              </span>
-            )}
+            ✅ Connecté au serveur ({donnees.length} patients)
           </div>
         );
       case 'disconnected':
@@ -447,7 +289,7 @@ const MgJournaux = ({ socket }) => {
         </div>
       </div>
 
-      {/* Bandeau d'état */}
+      {/* Bandeau d'état de connexion */}
       {socket && (
         <div style={{ 
           padding: '10px', 
@@ -463,6 +305,12 @@ const MgJournaux = ({ socket }) => {
           }`
         }}>
           {renderConnectionStatus()}
+          {connectionStatus === 'error' && socket && (
+            <div style={{ marginTop: '10px', fontSize: '14px' }}>
+              <strong>État Socket:</strong> {socket.connected ? 'Connecté' : 'Déconnecté'}<br />
+              <strong>Socket ID:</strong> {socket.id ? socket.id.substring(0, 8) + '...' : 'N/A'}
+            </div>
+          )}
         </div>
       )}
 
@@ -472,7 +320,7 @@ const MgJournaux = ({ socket }) => {
             <div className="spinner"></div>
             Chargement des données...
             <div style={{ fontSize: '12px', marginTop: '10px', color: '#666' }}>
-              Synchronisation temps réel: {updatesCount > 0 ? 'ACTIVE' : 'EN ATTENTE'}
+              Émission de l'événement: recuperer_donnees
             </div>
           </div>
         )}
@@ -483,6 +331,14 @@ const MgJournaux = ({ socket }) => {
             <button onClick={() => window.location.reload()} className="btn-reessayer">
               🔄 Réessayer
             </button>
+            <div style={{ marginTop: '10px', fontSize: '14px' }}>
+              <p>Solutions possibles:</p>
+              <ul style={{ textAlign: 'left', marginLeft: '20px' }}>
+                <li>Vérifiez que le serveur backend est en ligne</li>
+                <li>Rafraîchissez la page</li>
+                <li>Vérifiez la console du navigateur pour plus de détails (F12)</li>
+              </ul>
+            </div>
           </div>
         )}
         
@@ -491,29 +347,64 @@ const MgJournaux = ({ socket }) => {
             <h3>Sélectionnez un service pour afficher son journal</h3>
             
             <div className="boutons-services">
-              {['consultation', 'laboratoire', 'echographie', 'hospitalisation', 
-                'chirurgie', 'kinesitherapie', 'fibroscopie'].map(service => (
-                <button 
-                  key={service}
-                  className="bouton-service" 
-                  onClick={() => afficherDonneesService(service)}
-                  disabled={connectionStatus !== 'connected'}
-                >
-                  {service === 'laboratoire' ? '🔬' : 
-                   service === 'consultation' ? '📋' :
-                   service === 'echographie' ? '📊' :
-                   service === 'hospitalisation' ? '🏥' :
-                   service === 'chirurgie' ? '🔪' :
-                   service === 'kinesitherapie' ? '💪' : '📡'}
-                  Journal {service.charAt(0).toUpperCase() + service.slice(1)}
-                </button>
-              ))}
+              <button 
+                className="bouton-service" 
+                onClick={() => afficherDonneesService('consultation')}
+                disabled={connectionStatus !== 'connected'}
+              >
+                📋 Journal Consultation
+              </button>
+              <button 
+                className="bouton-service" 
+                onClick={() => afficherDonneesService('laboratoire')}
+                disabled={connectionStatus !== 'connected'}
+              >
+                🔬 Journal Laboratoire
+              </button>
+              <button 
+                className="bouton-service" 
+                onClick={() => afficherDonneesService('echographie')}
+                disabled={connectionStatus !== 'connected'}
+              >
+                📊 Journal Échographie
+              </button>
+              <button 
+                className="bouton-service" 
+                onClick={() => afficherDonneesService('hospitalisation')}
+                disabled={connectionStatus !== 'connected'}
+              >
+                🏥 Journal Hospitalisation
+              </button>
+              <button 
+                className="bouton-service" 
+                onClick={() => afficherDonneesService('chirurgie')}
+                disabled={connectionStatus !== 'connected'}
+              >
+                🔪 Journal Chirurgie
+              </button>
+              <button 
+                className="bouton-service" 
+                onClick={() => afficherDonneesService('kinesitherapie')}
+                disabled={connectionStatus !== 'connected'}
+              >
+                💪 Journal Kinésithérapie
+              </button>
+              <button 
+                className="bouton-service" 
+                onClick={() => afficherDonneesService('fibroscopie')}
+                disabled={connectionStatus !== 'connected'}
+              >
+                📡 Journal Fibroscopie
+              </button>
             </div>
 
+            {/* Statistiques globales */}
             <div className="stats-globales">
               <div className="stats-grid">
                 <div className="stat-item">
-                  <span className="stat-number">{donnees.length}</span>
+                  <span className="stat-number">
+                    {donnees.length}
+                  </span>
                   <span className="stat-label">Patients total</span>
                 </div>
                 <div className="stat-item">
@@ -538,14 +429,8 @@ const MgJournaux = ({ socket }) => {
                 </div>
               </div>
               
-              <div style={{ marginTop: '20px', padding: '10px', backgroundColor: '#e3f2fd', borderRadius: '5px' }}>
-                <p style={{ margin: 0, fontSize: '14px', color: '#0d47a1' }}>
-                  🔄 <strong>Synchronisation active:</strong> Les changements du laboratoire apparaissent en temps réel dans les journaux
-                </p>
-                <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: '#1565c0' }}>
-                  Dernière mise à jour: {derniereMiseAJour ? 
-                    new Date(derniereMiseAJour).toLocaleTimeString('fr-FR') : 'En attente...'}
-                </p>
+              <div style={{ marginTop: '20px', fontSize: '14px', color: '#666', fontStyle: 'italic' }}>
+                <p>⚠️ Ces journaux concernent les travaux de la clinique. Veuillez être attentif lors de la vérification pour des raisons de sécurité.</p>
               </div>
             </div>
           </div>
@@ -554,12 +439,7 @@ const MgJournaux = ({ socket }) => {
         {serviceSelectionne && (
           <div className="journal-donnees">
             <div className="journal-header">
-              <h3>
-                Journal du service : {serviceSelectionne}
-                <span style={{ marginLeft: '10px', fontSize: '14px', color: '#666' }}>
-                  ({donneesFiltrees.length} enregistrement{donneesFiltrees.length !== 1 ? 's' : ''})
-                </span>
-              </h3>
+              <h3>Journal du service : {serviceSelectionne}</h3>
               <div className="journal-actions">
                 <button className="btn-retour" onClick={retourSelection}>
                   ↩️ Retour aux services
@@ -588,62 +468,34 @@ const MgJournaux = ({ socket }) => {
                         <th style={{ padding: '10px', border: '1px solid #ddd' }}>Examens</th>
                         <th style={{ padding: '10px', border: '1px solid #ddd' }}>Total</th>
                         <th style={{ padding: '10px', border: '1px solid #ddd' }}>Caissier</th>
-                        <th style={{ padding: '10px', border: '1px solid #ddd' }}>Statut Labo</th>
+                        <th style={{ padding: '10px', border: '1px solid #ddd' }}>Statut</th>
                       </tr>
                     </thead>
                     <tbody>
                       {donneesFiltrees.map((patient, index) => (
-                        <tr key={index} style={{ 
-                          backgroundColor: index % 2 === 0 ? '#fff' : '#f9f9f9',
-                          transition: 'background-color 0.3s ease'
-                        }}>
+                        <tr key={index} style={{ backgroundColor: index % 2 === 0 ? '#fff' : '#f9f9f9' }}>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{formaterDate(patient)}</td>
-                          <td style={{ padding: '10px', border: '1px solid #ddd', fontWeight: 'bold' }}>
-                            {patient.nomClient}
-                          </td>
-                          <td style={{ padding: '10px', border: '1px solid #ddd', fontFamily: 'monospace' }}>
-                            {patient.numID_CSR}
-                          </td>
+                          <td style={{ padding: '10px', border: '1px solid #ddd' }}>{patient.nomClient}</td>
+                          <td style={{ padding: '10px', border: '1px solid #ddd' }}>{patient.numID_CSR}</td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{patient.numClient}</td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{formaterServices(patient.servicesSelectionnes)}</td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{formaterExamens(patient.examensSelectionnes)}</td>
-                          <td style={{ padding: '10px', border: '1px solid #ddd', fontWeight: 'bold' }}>
-                            {(patient.total_OP || 0).toLocaleString('fr-FR')} FCFA
-                          </td>
+                          <td style={{ padding: '10px', border: '1px solid #ddd' }}>{(patient.total_OP || 0).toLocaleString('fr-FR')} FCFA</td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{patient.caisseUser}</td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>
                             <span style={{
-                              padding: '5px 10px',
-                              borderRadius: '4px',
+                              padding: '3px 8px',
+                              borderRadius: '3px',
                               fontSize: '12px',
                               fontWeight: 'bold',
-                              display: 'inline-block',
-                              minWidth: '80px',
-                              textAlign: 'center',
                               backgroundColor: patient.isLaboratorized === 'Terminé' ? '#d4edda' : 
                                             patient.isLaboratorized === 'En cours' ? '#fff3cd' : 
-                                            patient.isLaboratorized === 'Annulé' ? '#f8d7da' : 
-                                            patient.isLaboratorized === 'En attente' ? '#e9ecef' : '#f8f9fa',
+                                            patient.isLaboratorized === 'Annulé' ? '#f8d7da' : '#e9ecef',
                               color: patient.isLaboratorized === 'Terminé' ? '#155724' : 
                                     patient.isLaboratorized === 'En cours' ? '#856404' : 
-                                    patient.isLaboratorized === 'Annulé' ? '#721c24' : 
-                                    patient.isLaboratorized === 'En attente' ? '#495057' : '#6c757d',
-                              border: `1px solid ${
-                                patient.isLaboratorized === 'Terminé' ? '#c3e6cb' : 
-                                patient.isLaboratorized === 'En cours' ? '#ffeaa7' : 
-                                patient.isLaboratorized === 'Annulé' ? '#f5c6cb' : '#dee2e6'
-                              }`,
-                              transition: 'all 0.3s ease'
+                                    patient.isLaboratorized === 'Annulé' ? '#721c24' : '#495057'
                             }}>
                               {patient.isLaboratorized || 'En attente'}
-                              {patient.lastUpdate && (
-                                <div style={{ fontSize: '10px', opacity: 0.7, marginTop: '2px' }}>
-                                  {new Date(patient.lastUpdate).toLocaleTimeString('fr-FR', { 
-                                    hour: '2-digit', 
-                                    minute: '2-digit' 
-                                  })}
-                                </div>
-                              )}
                             </span>
                           </td>
                         </tr>
@@ -652,50 +504,23 @@ const MgJournaux = ({ socket }) => {
                   </table>
                 </div>
                 
-                <div className="stats-service" style={{ 
-                  marginTop: '20px', 
-                  padding: '15px', 
-                  backgroundColor: '#f8f9fa', 
-                  borderRadius: '5px',
-                  border: '1px solid #dee2e6'
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-                    <div>
-                      <p style={{ margin: 0 }}>
-                        <strong>{donneesFiltrees.length}</strong> enregistrement{donneesFiltrees.length !== 1 ? 's' : ''} 
-                      </p>
-                      <p style={{ margin: '5px 0 0 0', fontSize: '14px' }}>
-                        <strong>Total encaissé:</strong> {
-                          donneesFiltrees.reduce((sum, item) => sum + (parseFloat(item.total_OP) || 0), 0)
-                            .toLocaleString('fr-FR')
-                        } FCFA
-                      </p>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <p style={{ margin: 0, fontSize: '14px' }}>
-                        <strong>Statuts:</strong>
-                        <span style={{ marginLeft: '10px', color: '#28a745' }}>
-                          Terminé: {donneesFiltrees.filter(p => p.isLaboratorized === 'Terminé').length}
-                        </span>
-                        <span style={{ marginLeft: '10px', color: '#ffc107' }}>
-                          En cours: {donneesFiltrees.filter(p => p.isLaboratorized === 'En cours').length}
-                        </span>
-                        <span style={{ marginLeft: '10px', color: '#6c757d' }}>
-                          En attente: {donneesFiltrees.filter(p => p.isLaboratorized === 'En attente').length}
-                        </span>
-                      </p>
-                      <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: '#666' }}>
-                        <strong>Dernière synchro:</strong> {new Date().toLocaleTimeString('fr-FR')}
-                      </p>
-                    </div>
-                  </div>
+                <div className="stats-service" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#f8f9fa', borderRadius: '5px' }}>
+                  <p>
+                    <strong>{donneesFiltrees.length}</strong> enregistrement(s) trouvé(s) pour le service {serviceSelectionne}
+                  </p>
+                  <p>
+                    <strong>Total encaissé:</strong> {
+                      donneesFiltrees.reduce((sum, item) => sum + (parseFloat(item.total_OP) || 0), 0).toLocaleString('fr-FR')
+                    } FCFA
+                  </p>
+                  <p>
+                    <strong>Dernière mise à jour:</strong> {new Date().toLocaleDateString('fr-FR')} à {new Date().toLocaleTimeString('fr-FR')}
+                  </p>
                 </div>
               </div>
             ) : (
               <div className="aucune-donnee" style={{ textAlign: 'center', padding: '40px' }}>
-                <p style={{ fontSize: '18px', color: '#666' }}>
-                  ⓘ Aucune donnée trouvée pour le service {serviceSelectionne}
-                </p>
+                <p style={{ fontSize: '18px', color: '#666' }}>ⓘ Aucune donnée trouvée pour le service {serviceSelectionne}</p>
                 <button className="btn-retour" onClick={retourSelection} style={{ marginTop: '20px' }}>
                   ↩️ Retour aux services
                 </button>
@@ -712,6 +537,50 @@ const MgJournaux = ({ socket }) => {
           </div>
         )}
       </div>
+
+      {/* CSS pour les états de connexion */}
+      <style>{`
+        .connection-status {
+          padding: 10px;
+          border-radius: 5px;
+          font-weight: bold;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .connection-status.connected {
+          background-color: #d4edda;
+          color: #155724;
+          border: 1px solid #c3e6cb;
+        }
+        .connection-status.error {
+          background-color: #f8d7da;
+          color: #721c24;
+          border: 1px solid #f5c6cb;
+        }
+        .connection-status.disconnected {
+          background-color: #ffeaa7;
+          color: #856404;
+          border: 1px solid #ffd166;
+        }
+        .retry-button {
+          margin-left: 10px;
+          padding: 5px 15px;
+          background-color: #007bff;
+          color: white;
+          border: none;
+          border-radius: 3px;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        .retry-button:hover {
+          background-color: #0056b3;
+        }
+        .bouton-service:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+      `}</style>
     </>
   );
 };
