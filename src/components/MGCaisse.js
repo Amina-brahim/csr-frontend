@@ -111,6 +111,7 @@ const MG_Caisse = ({ socket, user }) => {
   const [examensParService, setExamensParService] = useState(examensParServiceDefaut);
   const [lastClientNumber, setLastClientNumber] = useState(0);
   const [isLoadingClientNumber, setIsLoadingClientNumber] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
 
   // Référence pour le debounce
   const searchTimeoutRef = useRef(null);
@@ -135,7 +136,14 @@ const MG_Caisse = ({ socket, user }) => {
   }, []);
 
   // Fonction pour obtenir le prochain numéro client
-  const getNextClientNumber = useCallback(() => lastClientNumber + 1, [lastClientNumber]);
+  const getNextClientNumber = useCallback(() => {
+    // Récupérer depuis localStorage ou utiliser lastClientNumber + 1
+    const savedNextNum = parseInt(localStorage.getItem('nextClientNumber') || '0');
+    if (savedNextNum > lastClientNumber) {
+      return savedNextNum;
+    }
+    return lastClientNumber + 1;
+  }, [lastClientNumber]);
 
   // ========== CORRECTION CRITIQUE : FONCTION POUR GÉNÉRER LE CSR ID ==========
   const generateCSRID = useCallback((clientNumber) => {
@@ -143,8 +151,9 @@ const MG_Caisse = ({ socket, user }) => {
     const year = now.getFullYear(); // 4 chiffres
     const month = String(now.getMonth() + 1).padStart(2, '0'); // 2 chiffres
     const day = String(now.getDate()).padStart(2, '0'); // 2 chiffres
-    // Format: CSR + Année (4) + Mois (2) + Jour (2) + NumClient
-    return `CSR${year}${month}${day}${clientNumber}`;
+    // Format: CSR + Année (4) + Mois (2) + Jour (2) + NumClient (4 chiffres)
+    const clientNumStr = String(clientNumber).padStart(4, '0');
+    return `CSR${year}${month}${day}${clientNumStr}`;
   }, []);
 
   // État du formulaire
@@ -167,51 +176,100 @@ const MG_Caisse = ({ socket, user }) => {
     examensDetails: []
   });
 
-  // ========== EFFET POUR INITIALISER LES IDs AU CHARGEMENT ==========
+  // ========== EFFET POUR SURVEILLER LA CONNEXION SOCKET ==========
   useEffect(() => {
-    const initializeIDs = () => {
-      if (socket && socket.connected) {
-        console.log('🔍 Initialisation des IDs...');
+    if (!socket) return;
+
+    const handleConnect = () => {
+      console.log('✅ Socket connecté');
+      setIsConnected(true);
+      showNotification('Connecté au serveur', 'success');
+    };
+
+    const handleDisconnect = () => {
+      console.log('⚠️ Socket déconnecté');
+      setIsConnected(false);
+      showNotification('Déconnecté du serveur', 'warning');
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+
+    return () => {
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+    };
+  }, [socket, showNotification]);
+
+  // ========== EFFET POUR INITIALISER LES IDs PERSISTANTS ==========
+  useEffect(() => {
+    const initializeIDs = async () => {
+      console.log('🔍 Initialisation des IDs persistants...');
+      
+      try {
+        // 1. Essayer de récupérer depuis le localStorage d'abord
+        const savedLastNum = parseInt(localStorage.getItem('lastClientNumber') || '0');
+        const savedNextNum = parseInt(localStorage.getItem('nextClientNumber') || '1');
+        const savedCSRID = localStorage.getItem('lastCSRID');
         
-        // Demander le dernier numéro client au serveur
-        socket.emit('get_last_client_number', {}, (response) => {
-          if (response && response.success) {
-            const dernierNum = response.lastClientNumber || 0;
-            console.log(`📊 Dernier numéro client du serveur: ${dernierNum}`);
-            setLastClientNumber(dernierNum);
-            
-            // Calculer le prochain numéro client
-            const prochainNum = dernierNum + 1;
-            const csrId = generateCSRID(prochainNum);
-            
-            console.log(`✅ IDs générés: Client=${prochainNum}, CSR=${csrId}`);
-            
-            // Mettre à jour le formulaire
-            setFormData(prev => ({
-              ...prev,
-              numClient: prochainNum,
-              numID_CSR: csrId
-            }));
-            
-            setIsLoadingClientNumber(false);
-          } else {
-            console.error('❌ Erreur récupération dernier numéro client:', response?.message);
-            // Valeurs par défaut en cas d'erreur
-            const prochainNum = 1;
-            const csrId = generateCSRID(prochainNum);
-            
-            setFormData(prev => ({
-              ...prev,
-              numClient: prochainNum,
-              numID_CSR: csrId
-            }));
-            
-            setIsLoadingClientNumber(false);
-          }
-        });
-      } else {
-        console.log('⏳ En attente de connexion socket...');
-        // Valeurs par défaut temporaires
+        let prochainNum, csrId;
+        
+        // Si nous avons des données sauvegardées et qu'elles semblent valides
+        if (savedNextNum > 0 && savedNextNum > savedLastNum) {
+          prochainNum = savedNextNum;
+          csrId = generateCSRID(prochainNum);
+          console.log(`📂 Récupération depuis localStorage: Client=${prochainNum}`);
+        } else {
+          // Valeurs par défaut
+          prochainNum = 1;
+          csrId = generateCSRID(prochainNum);
+          console.log(`⚠️ Utilisation valeurs par défaut: Client=${prochainNum}`);
+        }
+        
+        // 2. Mettre à jour l'état
+        setLastClientNumber(prochainNum - 1);
+        setFormData(prev => ({
+          ...prev,
+          numClient: prochainNum,
+          numID_CSR: csrId
+        }));
+        
+        // 3. Si connecté, synchroniser avec le serveur
+        if (socket && socket.connected) {
+          socket.emit('get_last_client_number', {}, (response) => {
+            if (response && response.success) {
+              const serverLastNum = response.lastClientNumber || 0;
+              console.log(`📊 Dernier numéro client du serveur: ${serverLastNum}`);
+              
+              // Si le serveur a un numéro plus élevé, l'utiliser
+              if (serverLastNum >= prochainNum) {
+                const newNextNum = serverLastNum + 1;
+                const newCSRID = generateCSRID(newNextNum);
+                
+                console.log(`🔄 Synchronisation avec serveur: ${newNextNum}`);
+                
+                setLastClientNumber(serverLastNum);
+                setFormData(prev => ({
+                  ...prev,
+                  numClient: newNextNum,
+                  numID_CSR: newCSRID
+                }));
+                
+                // Sauvegarder les nouvelles valeurs
+                localStorage.setItem('lastClientNumber', serverLastNum.toString());
+                localStorage.setItem('nextClientNumber', newNextNum.toString());
+                localStorage.setItem('lastCSRID', newCSRID);
+              }
+            }
+          });
+        }
+        
+        setIsLoadingClientNumber(false);
+        
+      } catch (error) {
+        console.error('❌ Erreur initialisation IDs:', error);
+        
+        // Fallback absolu
         const prochainNum = 1;
         const csrId = generateCSRID(prochainNum);
         
@@ -220,6 +278,9 @@ const MG_Caisse = ({ socket, user }) => {
           numClient: prochainNum,
           numID_CSR: csrId
         }));
+        
+        setLastClientNumber(0);
+        setIsLoadingClientNumber(false);
       }
     };
 
@@ -228,16 +289,36 @@ const MG_Caisse = ({ socket, user }) => {
 
     // Écouter les événements de connexion socket
     if (socket) {
-      const handleConnect = () => {
-        console.log('✅ Socket connecté, initialisation des IDs...');
-        initializeIDs();
+      const handleSocketConnect = () => {
+        console.log('✅ Socket connecté, synchronisation des IDs...');
+        // Resynchroniser avec le serveur
+        socket.emit('sync_client_numbers', {}, (response) => {
+          if (response && response.success) {
+            console.log(`🔄 Synchronisation OK: ${response.lastClientNumber}`);
+            setLastClientNumber(response.lastClientNumber);
+            
+            const prochainNum = response.lastClientNumber + 1;
+            const csrId = generateCSRID(prochainNum);
+            
+            setFormData(prev => ({
+              ...prev,
+              numClient: prochainNum,
+              numID_CSR: csrId
+            }));
+            
+            // Sauvegarder
+            localStorage.setItem('lastClientNumber', response.lastClientNumber.toString());
+            localStorage.setItem('nextClientNumber', prochainNum.toString());
+            localStorage.setItem('lastCSRID', csrId);
+          }
+        });
       };
 
-      socket.on('connect', handleConnect);
+      socket.on('connect', handleSocketConnect);
 
       // Nettoyer l'écouteur
       return () => {
-        socket.off('connect', handleConnect);
+        socket.off('connect', handleSocketConnect);
       };
     }
   }, [socket, generateCSRID]);
@@ -248,9 +329,10 @@ const MG_Caisse = ({ socket, user }) => {
       numClient: formData.numClient,
       numID_CSR: formData.numID_CSR,
       lastClientNumber,
-      isLoadingClientNumber
+      isLoadingClientNumber,
+      isConnected
     });
-  }, [formData.numClient, formData.numID_CSR, lastClientNumber, isLoadingClientNumber]);
+  }, [formData.numClient, formData.numID_CSR, lastClientNumber, isLoadingClientNumber, isConnected]);
 
   // ========== FONCTIONS RAPIDES POUR LA MODALE ==========
   
@@ -340,21 +422,23 @@ const MG_Caisse = ({ socket, user }) => {
       }
       
       searchTimeoutRef.current = setTimeout(() => {
-        socket.emit('get_patient_by_csr', value, (response) => {
-          if (response && response.success && response.patient) {
-            setSearchResults(response.patient);
-            setFormData(prev => ({
-              ...prev,
-              nomClient: response.patient.nomClient || '',
-              numAirTel: response.patient.numAirTel || '',
-              numTIGO: response.patient.numTIGO || '',
-              numMedecin: response.patient.numMedecin || '',
-            }));
-          } else {
-            setSearchResults(null);
-          }
-        });
-      }, 300); // Seulement 300ms de délai au lieu de 500ms
+        if (socket && socket.connected) {
+          socket.emit('get_patient_by_csr', value, (response) => {
+            if (response && response.success && response.patient) {
+              setSearchResults(response.patient);
+              setFormData(prev => ({
+                ...prev,
+                nomClient: response.patient.nomClient || '',
+                numAirTel: response.patient.numAirTel || '',
+                numTIGO: response.patient.numTIGO || '',
+                numMedecin: response.patient.numMedecin || '',
+              }));
+            } else {
+              setSearchResults(null);
+            }
+          });
+        }
+      }, 300);
     } else {
       setSearchResults(null);
     }
@@ -381,70 +465,94 @@ const MG_Caisse = ({ socket, user }) => {
 
   // ========== CORRECTION CRITIQUE : FONCTION CLEARFORM ==========
   const clearForm = () => {
-    // 1. Demander au serveur le prochain numéro client
-    socket.emit('get_next_client_id', {}, (response) => {
-      if (response && response.success) {
-        const prochainNum = response.nextId;
-        const csrId = generateCSRID(prochainNum);
-        
-        console.log(`🔄 Nouveau formulaire: Client=${prochainNum}, CSR=${csrId}`);
-        
-        // 2. Mettre à jour l'état local
-        setLastClientNumber(prochainNum - 1);
-        
-        // 3. Réinitialiser le formulaire avec les nouveaux IDs
-        setFormData({
-          numClient: prochainNum,
-          nomClient: '',
-          numID_CSR: csrId,
-          numAirTel: '',
-          numTIGO: "",
-          numMedecin: "",
-          mode_Paie_OP: "",
-          service: "aucun",
-          assure: "Non",
-          total_OP: "",
-          remise_OP: "",
-          dette_OP: "",
-          jeton_OP: autoGenJeton(),
-          isLaboratorized: "En attente",
-          servicesDetails: [],
-          examensDetails: []
-        });
-        
-        setSearchResults(null);
-        setSelectedExamens([]);
-        setServicesSelectionnes([]);
-        
-        showNotification(`Formulaire réinitialisé. Nouvel ID: ${csrId}`, 'info');
-        
-      } else {
-        console.error('❌ Erreur récupération prochain ID client:', response?.message);
-        showNotification('Erreur lors de la réinitialisation', 'error');
-        
-        // Fallback: incrémenter localement
-        const prochainNum = lastClientNumber + 2;
-        const csrId = generateCSRID(prochainNum);
-        
-        setFormData(prev => ({
-          ...prev,
-          numClient: prochainNum,
-          numID_CSR: csrId,
-          nomClient: '',
-          numAirTel: '',
-          numTIGO: "",
-          numMedecin: "",
-          total_OP: "",
-          remise_OP: "",
-          dette_OP: ""
-        }));
-        
-        setSearchResults(null);
-        setSelectedExamens([]);
-        setServicesSelectionnes([]);
-        setLastClientNumber(prev => prev + 1);
-      }
-    });
+    console.log('🔄 Réinitialisation du formulaire avec IDs persistants...');
+    
+    if (socket && socket.connected) {
+      // Demander AU SERVEUR le prochain numéro
+      socket.emit('get_next_client_id', {}, (response) => {
+        if (response && response.success) {
+          const prochainNum = response.nextId;
+          const csrId = generateCSRID(prochainNum);
+          
+          console.log(`🔄 Nouveau formulaire: Client=${prochainNum}, CSR=${csrId}`);
+          
+          // Mettre à jour l'état local
+          setLastClientNumber(prochainNum - 1);
+          
+          // SAUVEGARDER LOCALEMENT
+          localStorage.setItem('lastClientNumber', (prochainNum - 1).toString());
+          localStorage.setItem('nextClientNumber', prochainNum.toString());
+          localStorage.setItem('lastCSRID', csrId);
+          localStorage.setItem('lastIDTimestamp', new Date().toISOString());
+          
+          // Réinitialiser le formulaire
+          setFormData({
+            numClient: prochainNum,
+            nomClient: '',
+            numID_CSR: csrId,
+            numAirTel: '',
+            numTIGO: "",
+            numMedecin: "",
+            mode_Paie_OP: "",
+            service: "aucun",
+            assure: "Non",
+            total_OP: "",
+            remise_OP: "",
+            dette_OP: "",
+            jeton_OP: autoGenJeton(),
+            isLaboratorized: "En attente",
+            servicesDetails: [],
+            examensDetails: []
+          });
+          
+          setSearchResults(null);
+          setSelectedExamens([]);
+          setServicesSelectionnes([]);
+          
+          showNotification(`Formulaire réinitialisé. Nouvel ID: ${csrId}`, 'info');
+          
+        } else {
+          // FALLBACK : Incrémenter localement
+          handleClearFormFallback();
+        }
+      });
+    } else {
+      // Pas de connexion, utiliser le fallback
+      handleClearFormFallback();
+    }
+  };
+
+  // Fonction fallback pour clearForm
+  const handleClearFormFallback = () => {
+    // Récupérer depuis localStorage ou incrémenter
+    const savedNextNum = parseInt(localStorage.getItem('nextClientNumber') || '1');
+    const prochainNum = savedNextNum + 1;
+    const csrId = generateCSRID(prochainNum);
+    
+    // Sauvegarder
+    localStorage.setItem('lastClientNumber', (prochainNum - 1).toString());
+    localStorage.setItem('nextClientNumber', prochainNum.toString());
+    localStorage.setItem('lastCSRID', csrId);
+    
+    setFormData(prev => ({
+      ...prev,
+      numClient: prochainNum,
+      numID_CSR: csrId,
+      nomClient: '',
+      numAirTel: '',
+      numTIGO: "",
+      numMedecin: "",
+      total_OP: "",
+      remise_OP: "",
+      dette_OP: ""
+    }));
+    
+    setSearchResults(null);
+    setSelectedExamens([]);
+    setServicesSelectionnes([]);
+    setLastClientNumber(prochainNum - 1);
+    
+    showNotification(`Formulaire réinitialisé (mode local): ${csrId}`, 'info');
   };
 
   // ========== CORRECTION CRITIQUE : FONCTION HANDLESUBMIT ==========
@@ -467,25 +575,36 @@ const MG_Caisse = ({ socket, user }) => {
       return;
     }
     
-    // Préparer les données avec les IDs
+    // S'assurer que numClient est un nombre
+    const numClientNum = parseInt(formData.numClient);
+    if (isNaN(numClientNum) || numClientNum <= 0) {
+      showNotification("Numéro client invalide", "error");
+      return;
+    }
+    
+    // Préparer les données
     const dataToSend = {
       ...formData,
-      numClient: formData.numClient,  // S'assurer que c'est bien un nombre
-      numID_CSR: formData.numID_CSR,  // S'assurer que c'est bien la string générée
+      numClient: numClientNum,
+      numID_CSR: formData.numID_CSR.trim(),
       caisseUser: currentUser ? currentUser.username : 'Utilisateur inconnu',
       caisseService: 'Caisse',
       servicesSelectionnes: servicesSelectionnes,
-      examensSelectionnes: selectedExamens
+      examensSelectionnes: selectedExamens,
+      timestamp: new Date().toISOString()
     };
     
-    // Log pour débogage
-    console.log('📤 Données envoyées au serveur:', {
+    console.log('📤 Données envoyées:', {
       numClient: dataToSend.numClient,
       numID_CSR: dataToSend.numID_CSR,
-      nomClient: dataToSend.nomClient,
-      services: dataToSend.servicesSelectionnes.length,
-      examens: dataToSend.examensSelectionnes.length
+      nomClient: dataToSend.nomClient
     });
+    
+    // Vérifier la connexion
+    if (!socket || !socket.connected) {
+      showNotification("Non connecté au serveur. Impossible d'enregistrer.", "error");
+      return;
+    }
     
     // Envoyer au serveur
     socket.emit("labo", dataToSend, (response) => {
@@ -493,12 +612,26 @@ const MG_Caisse = ({ socket, user }) => {
         showNotification("Patient enregistré avec succès!", "success");
         console.log(`✅ Patient enregistré: ${dataToSend.nomClient} (${dataToSend.numID_CSR})`);
         
+        // SAUVEGARDER LOCALEMENT LE SUCCÈS
+        localStorage.setItem('lastSuccessfulNumClient', dataToSend.numClient.toString());
+        localStorage.setItem('lastSuccessfulCSRID', dataToSend.numID_CSR);
+        localStorage.setItem('lastSuccessfulTimestamp', new Date().toISOString());
+        
+        // Mettre à jour le dernier numéro client local
+        setLastClientNumber(dataToSend.numClient);
+        localStorage.setItem('lastClientNumber', dataToSend.numClient.toString());
+        
+        // Calculer le prochain numéro pour la prochaine fois
+        const nextNum = dataToSend.numClient + 1;
+        localStorage.setItem('nextClientNumber', nextNum.toString());
+        
         if (servicesSelectionnes.some(s => s.value === "laboratoire")) {
           socket.emit("labo_supplementaire", dataToSend);
         }
         
-        // Après enregistrement réussi, réinitialiser le formulaire
-        clearForm();
+        // Après enregistrement réussi, réinitialiser partiellement
+        handlePostSaveReset();
+        
       } else {
         const errorMsg = response?.message || "Erreur inconnue";
         showNotification(`Erreur lors de l'enregistrement: ${errorMsg}`, "error");
@@ -507,27 +640,88 @@ const MG_Caisse = ({ socket, user }) => {
     });
   };
 
+  // Fonction de réinitialisation après sauvegarde
+  const handlePostSaveReset = () => {
+    // Garder le même numéro client et CSR ID
+    const currentNum = formData.numClient;
+    const currentCSR = formData.numID_CSR;
+    
+    setFormData(prev => ({
+      ...prev,
+      nomClient: '',
+      numAirTel: '',
+      numTIGO: "",
+      numMedecin: "",
+      mode_Paie_OP: "",
+      service: "aucun",
+      assure: "Non",
+      total_OP: "",
+      remise_OP: "",
+      dette_OP: "",
+      jeton_OP: autoGenJeton(),
+      isLaboratorized: "En attente",
+      servicesDetails: [],
+      examensDetails: []
+    }));
+    
+    setSearchResults(null);
+    setSelectedExamens([]);
+    setServicesSelectionnes([]);
+    
+    // MAIS générer un nouveau jeton
+    setFormData(prev => ({
+      ...prev,
+      jeton_OP: autoGenJeton()
+    }));
+    
+    // Mettre à jour les IDs pour le prochain patient
+    const nextNum = currentNum + 1;
+    const nextCSR = generateCSRID(nextNum);
+    
+    setFormData(prev => ({
+      ...prev,
+      numClient: nextNum,
+      numID_CSR: nextCSR
+    }));
+    
+    // Sauvegarder pour la prochaine fois
+    localStorage.setItem('nextClientNumber', nextNum.toString());
+    localStorage.setItem('lastCSRID', nextCSR);
+  };
+
   // ========== FONCTION POUR RÉGÉNÉRER LES IDs MANUELLEMENT ==========
   const regenerateIDs = () => {
+    console.log('🔄 Régénération manuelle des IDs...');
+    
     if (socket && socket.connected) {
-      socket.emit('get_next_client_id', {}, (response) => {
+      socket.emit('get_last_client_number', {}, (response) => {
         if (response && response.success) {
-          const prochainNum = response.nextId;
+          const dernierNum = response.lastClientNumber;
+          const prochainNum = dernierNum + 1;
           const csrId = generateCSRID(prochainNum);
           
+          // Mettre à jour l'état
           setFormData(prev => ({
             ...prev,
             numClient: prochainNum,
             numID_CSR: csrId
           }));
           
-          showNotification(`IDs régénérés: ${csrId}`, 'success');
+          setLastClientNumber(dernierNum);
+          
+          // Sauvegarder
+          localStorage.setItem('lastClientNumber', dernierNum.toString());
+          localStorage.setItem('nextClientNumber', prochainNum.toString());
+          localStorage.setItem('lastCSRID', csrId);
+          
+          showNotification(`IDs synchronisés: ${csrId}`, 'success');
           console.log(`🔄 IDs régénérés: Client=${prochainNum}, CSR=${csrId}`);
         }
       });
     } else {
-      // Fallback local
-      const prochainNum = lastClientNumber + 1;
+      // Mode local - incrémenter depuis le dernier connu
+      const savedNextNum = parseInt(localStorage.getItem('nextClientNumber') || '1');
+      const prochainNum = savedNextNum;
       const csrId = generateCSRID(prochainNum);
       
       setFormData(prev => ({
@@ -595,6 +789,11 @@ const MG_Caisse = ({ socket, user }) => {
                     numID_CSR: csrId
                   }));
                   setLastClientNumber(dernierNum);
+                  
+                  // Sauvegarder
+                  localStorage.setItem('lastClientNumber', dernierNum.toString());
+                  localStorage.setItem('nextClientNumber', prochainNum.toString());
+                  localStorage.setItem('lastCSRID', csrId);
                 }
               });
             }
@@ -640,20 +839,27 @@ const MG_Caisse = ({ socket, user }) => {
         
         // Initialiser les IDs après identification
         setTimeout(() => {
-          socket.emit('get_last_client_number', {}, (response) => {
-            if (response && response.success) {
-              const dernierNum = response.lastClientNumber || 0;
-              const prochainNum = dernierNum + 1;
-              const csrId = generateCSRID(prochainNum);
-              
-              setFormData(prev => ({
-                ...prev,
-                numClient: prochainNum,
-                numID_CSR: csrId
-              }));
-              setLastClientNumber(dernierNum);
-            }
-          });
+          if (socket && socket.connected) {
+            socket.emit('get_last_client_number', {}, (response) => {
+              if (response && response.success) {
+                const dernierNum = response.lastClientNumber || 0;
+                const prochainNum = dernierNum + 1;
+                const csrId = generateCSRID(prochainNum);
+                
+                setFormData(prev => ({
+                  ...prev,
+                  numClient: prochainNum,
+                  numID_CSR: csrId
+                }));
+                setLastClientNumber(dernierNum);
+                
+                // Sauvegarder
+                localStorage.setItem('lastClientNumber', dernierNum.toString());
+                localStorage.setItem('nextClientNumber', prochainNum.toString());
+                localStorage.setItem('lastCSRID', csrId);
+              }
+            });
+          }
         }, 500);
       }
     }
@@ -890,6 +1096,9 @@ const MG_Caisse = ({ socket, user }) => {
                 <div className="user-status-indicator">
                   <span className={`status-dot ${currentUser.isIdentified ? 'online' : 'offline'}`}></span>
                   Connecté en tant que: <strong>{currentUser.username}</strong> (Caisse)
+                  <span className={`connection-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
+                    {isConnected ? '✅ Connecté' : '⚠️ Déconnecté'}
+                  </span>
                 </div>
               </div>
             )}
@@ -1160,8 +1369,13 @@ const MG_Caisse = ({ socket, user }) => {
           </form>
           
           <div className='ftt__footer BC sep no-print'>
-            <button className="glow-on-hover MenuBtn" type="button" onClick={handleSubmit}>
-              Enregistrer
+            <button 
+              className="glow-on-hover MenuBtn" 
+              type="button" 
+              onClick={handleSubmit}
+              disabled={!isConnected}
+            >
+              {isConnected ? 'Enregistrer' : '⚠️ Déconnecté'}
             </button>
             <span> | </span>
             <button className="glow-on-hover MenuBtn" type="button" onClick={sirFiltre}>
@@ -1181,7 +1395,7 @@ const MG_Caisse = ({ socket, user }) => {
             </button>
             <span> | </span>
             <button className="glow-on-hover MenuBtn" type="button" onClick={regenerateIDs}>
-              🔄 Régénérer IDs
+              🔄 Synchroniser IDs
             </button>
             <span> | </span>
             <button className="glow-on-hover MenuBtn" type="button" onClick={sirAcceuil}>
@@ -1199,13 +1413,21 @@ const MG_Caisse = ({ socket, user }) => {
               fontSize: '14px',
               borderLeft: '4px solid #007bff'
             }}>
-              <strong>IDs générés automatiquement:</strong>
+              <strong>IDs persistants générés:</strong>
               <div style={{ marginTop: '5px' }}>
                 <span>Numéro Client: <strong>{formData.numClient}</strong></span>
                 <span style={{ marginLeft: '15px' }}>ID CSR: <strong>{formData.numID_CSR}</strong></span>
               </div>
               <div style={{ marginTop: '5px', fontSize: '12px', color: '#666' }}>
-                Format: CSR + Année (4) + Mois (2) + Jour (2) + NumClient
+                Format: CSR + Année (4) + Mois (2) + Jour (2) + NumClient (4 chiffres)
+                <div style={{ marginTop: '3px' }}>
+                  Statut: {isConnected ? '✅ Connecté au serveur' : '⚠️ Mode local'}
+                  {!isConnected && (
+                    <span style={{ marginLeft: '10px', color: '#dc3545' }}>
+                      Les données seront synchronisées à la reconnexion
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           )}
