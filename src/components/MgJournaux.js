@@ -11,6 +11,7 @@ const MgJournaux = ({ socket }) => {
   const [donneesFiltrees, setDonneesFiltrees] = useState([]);
   const [serviceSelectionne, setServiceSelectionne] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState(socket?.connected ? 'connected' : 'disconnected');
+  const [lastUpdate, setLastUpdate] = useState(null);
 
   // Surveiller l'état de la connexion socket
   useEffect(() => {
@@ -51,6 +52,27 @@ const MgJournaux = ({ socket }) => {
       socket.off('connect_error', handleConnectError);
     };
   }, [socket]);
+
+  // Système de réessai automatique
+  useEffect(() => {
+    let retryInterval;
+    
+    if (connectionStatus === 'disconnected' || connectionStatus === 'error') {
+      // Réessayer automatiquement toutes les 10 secondes
+      retryInterval = setInterval(() => {
+        if (socket && !socket.connected) {
+          console.log('🔄 Tentative de reconnexion automatique...');
+          socket.connect();
+        }
+      }, 10000);
+    }
+    
+    return () => {
+      if (retryInterval) {
+        clearInterval(retryInterval);
+      }
+    };
+  }, [connectionStatus, socket]);
 
   // Fonction pour formater la date de manière sécurisée
   const formaterDate = (patient) => {
@@ -98,6 +120,20 @@ const MgJournaux = ({ socket }) => {
     if (!socket || !socket.connected) {
       setErreur("Non connecté au serveur. Veuillez rafraîchir la page.");
       setChargement(false);
+      
+      // ESSAYER DE CHARGER DEPUIS LE LOCALSTORAGE EN MODE HORS LIGNE
+      try {
+        const savedData = localStorage.getItem('journalDataBackup');
+        if (savedData) {
+          const parsedData = JSON.parse(savedData);
+          setDonnees(parsedData);
+          console.log(`📂 Données chargées depuis backup: ${parsedData.length} patients`);
+          setErreur('Mode hors ligne - Données locales');
+        }
+      } catch (e) {
+        console.error('Erreur chargement backup:', e);
+      }
+      
       return;
     }
 
@@ -106,8 +142,17 @@ const MgJournaux = ({ socket }) => {
     
     console.log('📥 MgJournaux: Demande des données du journal...');
     
-    // CORRECTION : Utiliser l'événement dédié pour le journal
+    // Ajouter un timeout pour éviter les blocages
+    const timeoutId = setTimeout(() => {
+      if (chargement) {
+        setErreur("Délai d'attente dépassé. Vérifiez la connexion au serveur.");
+        setChargement(false);
+      }
+    }, 15000);
+    
     socket.emit('recuperer_donnees_journal', (response) => {
+      clearTimeout(timeoutId);
+      
       console.log('📥 MgJournaux: Réponse du serveur:', response);
       
       if (response && response.success && response.donnees) {
@@ -130,6 +175,15 @@ const MgJournaux = ({ socket }) => {
         
         setDonnees(donneesFormatees);
         setErreur(null);
+        setLastUpdate(new Date().toISOString());
+        
+        // SAUVEGARDER EN LOCAL POUR MODE HORS LIGNE
+        try {
+          localStorage.setItem('journalDataBackup', JSON.stringify(donneesFormatees));
+          localStorage.setItem('journalLastUpdate', new Date().toISOString());
+        } catch (e) {
+          console.error('Erreur sauvegarde backup:', e);
+        }
         
         // Re-filtrer si un service est sélectionné
         if (serviceSelectionne) {
@@ -139,6 +193,19 @@ const MgJournaux = ({ socket }) => {
         const errorMsg = response?.error || response?.message || "Erreur lors de la récupération des données";
         console.error('❌ MgJournaux:', errorMsg);
         setErreur(errorMsg);
+        
+        // ESSAYER LE BACKUP
+        try {
+          const savedData = localStorage.getItem('journalDataBackup');
+          if (savedData) {
+            const parsedData = JSON.parse(savedData);
+            setDonnees(parsedData);
+            const lastUpdate = localStorage.getItem('journalLastUpdate');
+            setErreur(`Mode hors ligne. Données du ${new Date(lastUpdate).toLocaleDateString('fr-FR')}`);
+          }
+        } catch (e) {
+          console.error('Erreur chargement backup:', e);
+        }
       }
       setChargement(false);
     });
@@ -186,6 +253,8 @@ const MgJournaux = ({ socket }) => {
         return [...prev, newData];
       });
       
+      setLastUpdate(new Date().toISOString());
+      
       // Re-filtrer si un service est sélectionné
       if (serviceSelectionne) {
         filtrerDonneesParService(serviceSelectionne);
@@ -207,6 +276,8 @@ const MgJournaux = ({ socket }) => {
         }
         return item;
       }));
+      
+      setLastUpdate(new Date().toISOString());
       
       // Re-filtrer si un service est sélectionné
       if (serviceSelectionne) {
@@ -233,6 +304,8 @@ const MgJournaux = ({ socket }) => {
         return prev;
       });
       
+      setLastUpdate(new Date().toISOString());
+      
       // Re-filtrer si un service est sélectionné
       if (serviceSelectionne) {
         filtrerDonneesParService(serviceSelectionne);
@@ -258,6 +331,8 @@ const MgJournaux = ({ socket }) => {
         return prev;
       });
       
+      setLastUpdate(new Date().toISOString());
+      
       // Re-filtrer si un service est sélectionné
       if (serviceSelectionne) {
         filtrerDonneesParService(serviceSelectionne);
@@ -266,9 +341,9 @@ const MgJournaux = ({ socket }) => {
 
     socket.on('nouveau_patient_journal', handleNouveauPatient);
     socket.on('nouveau_patient', handleNouveauPatient);
-    socket.on('journal_status_update', handleJournalStatusUpdate); // AJOUTER
-    socket.on('patient_data_updated', handlePatientDataUpdated); // AJOUTER
-    socket.on('Etat Analyses Mis à Jour', handleEtatAnalysesMisAJour); // AJOUTER
+    socket.on('journal_status_update', handleJournalStatusUpdate);
+    socket.on('patient_data_updated', handlePatientDataUpdated);
+    socket.on('Etat Analyses Mis à Jour', handleEtatAnalysesMisAJour);
 
     // Nettoyer les écouteurs
     return () => {
@@ -364,25 +439,51 @@ const MgJournaux = ({ socket }) => {
       case 'connected':
         return (
           <div className="connection-status connected">
-            ✅ Connecté au serveur ({donnees.length} patients)
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                ✅ Connecté au serveur ({donnees.length} patients)
+                {lastUpdate && (
+                  <div style={{ fontSize: '12px', marginTop: '3px' }}>
+                    Dernière mise à jour: {new Date(lastUpdate).toLocaleTimeString('fr-FR')}
+                  </div>
+                )}
+              </div>
+              <button onClick={() => window.location.reload()} className="retry-button">
+                🔄 Rafraîchir
+              </button>
+            </div>
           </div>
         );
       case 'disconnected':
         return (
           <div className="connection-status disconnected">
-            ⚠️ Déconnecté du serveur
-            <button onClick={() => window.location.reload()} className="retry-button">
-              🔄 Reconnecter
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                ⚠️ Déconnecté du serveur
+                <div style={{ fontSize: '12px', marginTop: '3px' }}>
+                  Reconnexion automatique dans 10 secondes...
+                </div>
+              </div>
+              <button onClick={() => window.location.reload()} className="retry-button">
+                🔄 Reconnecter
+              </button>
+            </div>
           </div>
         );
       case 'error':
         return (
           <div className="connection-status error">
-            ❌ {erreur}
-            <button onClick={() => window.location.reload()} className="retry-button">
-              🔄 Réessayer
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                ❌ {erreur}
+                <div style={{ fontSize: '12px', marginTop: '3px' }}>
+                  Utilisation des données locales sauvegardées
+                </div>
+              </div>
+              <button onClick={() => window.location.reload()} className="retry-button">
+                🔄 Réessayer
+              </button>
+            </div>
           </div>
         );
       default:
@@ -422,16 +523,6 @@ const MgJournaux = ({ socket }) => {
           }`
         }}>
           {renderConnectionStatus()}
-          {connectionStatus === 'connected' && (
-            <div style={{ marginTop: '10px', fontSize: '14px' }}>
-              <strong>Mises à jour en temps réel: </strong>Actives ✅
-              <div style={{ marginTop: '5px' }}>
-                <button onClick={chargerDonneesDuServeur} className="retry-button">
-                  🔄 Rafraîchir les données
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
@@ -446,7 +537,7 @@ const MgJournaux = ({ socket }) => {
           </div>
         )}
         
-        {erreur && !chargement && (
+        {erreur && !chargement && !serviceSelectionne && (
           <div className="erreur">
             <strong>Erreur:</strong> {erreur}
             <button onClick={() => window.location.reload()} className="btn-reessayer">
@@ -471,49 +562,49 @@ const MgJournaux = ({ socket }) => {
               <button 
                 className="bouton-service" 
                 onClick={() => afficherDonneesService('consultation')}
-                disabled={connectionStatus !== 'connected'}
+                disabled={connectionStatus !== 'connected' && donnees.length === 0}
               >
                 📋 Journal Consultation
               </button>
               <button 
                 className="bouton-service" 
                 onClick={() => afficherDonneesService('laboratoire')}
-                disabled={connectionStatus !== 'connected'}
+                disabled={connectionStatus !== 'connected' && donnees.length === 0}
               >
                 🔬 Journal Laboratoire
               </button>
               <button 
                 className="bouton-service" 
                 onClick={() => afficherDonneesService('echographie')}
-                disabled={connectionStatus !== 'connected'}
+                disabled={connectionStatus !== 'connected' && donnees.length === 0}
               >
                 📊 Journal Échographie
               </button>
               <button 
                 className="bouton-service" 
                 onClick={() => afficherDonneesService('hospitalisation')}
-                disabled={connectionStatus !== 'connected'}
+                disabled={connectionStatus !== 'connected' && donnees.length === 0}
               >
                 🏥 Journal Hospitalisation
               </button>
               <button 
                 className="bouton-service" 
                 onClick={() => afficherDonneesService('chirurgie')}
-                disabled={connectionStatus !== 'connected'}
+                disabled={connectionStatus !== 'connected' && donnees.length === 0}
               >
                 🔪 Journal Chirurgie
               </button>
               <button 
                 className="bouton-service" 
                 onClick={() => afficherDonneesService('kinesitherapie')}
-                disabled={connectionStatus !== 'connected'}
+                disabled={connectionStatus !== 'connected' && donnees.length === 0}
               >
                 💪 Journal Kinésithérapie
               </button>
               <button 
                 className="bouton-service" 
                 onClick={() => afficherDonneesService('fibroscopie')}
-                disabled={connectionStatus !== 'connected'}
+                disabled={connectionStatus !== 'connected' && donnees.length === 0}
               >
                 📡 Journal Fibroscopie
               </button>
@@ -553,6 +644,11 @@ const MgJournaux = ({ socket }) => {
               <div style={{ marginTop: '20px', fontSize: '14px', color: '#666', fontStyle: 'italic' }}>
                 <p>⚠️ Ces journaux concernent les travaux de la clinique. Veuillez être attentif lors de la vérification pour des raisons de sécurité.</p>
                 <p>🔄 Les mises à jour du laboratoire sont reçues en temps réel.</p>
+                {connectionStatus !== 'connected' && (
+                  <p style={{ color: '#dc3545' }}>
+                    ⚠️ Mode hors ligne - Affichage des dernières données sauvegardées
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -605,8 +701,14 @@ const MgJournaux = ({ socket }) => {
                         <tr key={index} style={{ backgroundColor: index % 2 === 0 ? '#fff' : '#f9f9f9' }}>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{formaterDate(patient)}</td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{patient.nomClient}</td>
-                          <td style={{ padding: '10px', border: '1px solid #ddd' }}>{patient.numID_CSR}</td>
-                          <td style={{ padding: '10px', border: '1px solid #ddd' }}>{patient.numClient}</td>
+                          <td style={{ padding: '10px', border: '1px solid #ddd', fontFamily: 'monospace', fontSize: '12px' }}>
+                            {patient.numID_CSR}
+                            {patient.numID_CSR && patient.numID_CSR.startsWith('CSR') && 
+                              <span style={{ fontSize: '10px', color: '#28a745', marginLeft: '5px' }}>✓</span>}
+                          </td>
+                          <td style={{ padding: '10px', border: '1px solid #ddd', fontWeight: 'bold' }}>
+                            {patient.numClient}
+                          </td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{formaterServices(patient.servicesSelectionnes)}</td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{formaterExamens(patient.examensSelectionnes)}</td>
                           <td style={{ padding: '10px', border: '1px solid #ddd' }}>{(patient.total_OP || 0).toLocaleString('fr-FR')} FCFA</td>
@@ -643,10 +745,10 @@ const MgJournaux = ({ socket }) => {
                     } FCFA
                   </p>
                   <p>
-                    <strong>Dernière mise à jour:</strong> {new Date().toLocaleDateString('fr-FR')} à {new Date().toLocaleTimeString('fr-FR')}
+                    <strong>Dernière mise à jour:</strong> {lastUpdate ? new Date(lastUpdate).toLocaleString('fr-FR') : 'N/A'}
                   </p>
-                  <p style={{ color: '#28a745', fontWeight: 'bold' }}>
-                    🔄 Mises à jour en temps réel activées
+                  <p style={{ color: connectionStatus === 'connected' ? '#28a745' : '#dc3545', fontWeight: 'bold' }}>
+                    {connectionStatus === 'connected' ? '🔄 Mises à jour en temps réel activées' : '⚠️ Mode hors ligne'}
                   </p>
                 </div>
               </div>
@@ -676,9 +778,6 @@ const MgJournaux = ({ socket }) => {
           padding: 10px;
           border-radius: 5px;
           font-weight: bold;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
         }
         .connection-status.connected {
           background-color: #d4edda;
@@ -723,6 +822,18 @@ const MgJournaux = ({ socket }) => {
         }
         .btn-refresh:hover {
           background-color: #138496;
+        }
+        .btn-reessayer {
+          margin-left: 10px;
+          padding: 5px 15px;
+          background-color: #6c757d;
+          color: white;
+          border: none;
+          border-radius: 3px;
+          cursor: pointer;
+        }
+        .btn-reessayer:hover {
+          background-color: #5a6268;
         }
       `}</style>
     </>
