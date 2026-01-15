@@ -465,7 +465,7 @@ const MG_Caisse = ({ socket, user }) => {
 
   // ========== CORRECTION CRITIQUE : FONCTION CLEARFORM ==========
   const clearForm = () => {
-    console.log('🔄 Réinitialisation du formulaire avec IDs persistants...');
+    console.log('🔄 Réinitialisation COMPLÈTE du formulaire...');
     
     if (socket && socket.connected) {
       // Demander AU SERVEUR le prochain numéro
@@ -485,7 +485,7 @@ const MG_Caisse = ({ socket, user }) => {
           localStorage.setItem('lastCSRID', csrId);
           localStorage.setItem('lastIDTimestamp', new Date().toISOString());
           
-          // Réinitialiser le formulaire
+          // Réinitialiser COMPLÈTEMENT le formulaire
           setFormData({
             numClient: prochainNum,
             nomClient: '',
@@ -534,18 +534,24 @@ const MG_Caisse = ({ socket, user }) => {
     localStorage.setItem('nextClientNumber', prochainNum.toString());
     localStorage.setItem('lastCSRID', csrId);
     
-    setFormData(prev => ({
-      ...prev,
+    setFormData({
       numClient: prochainNum,
-      numID_CSR: csrId,
       nomClient: '',
+      numID_CSR: csrId,
       numAirTel: '',
       numTIGO: "",
       numMedecin: "",
+      mode_Paie_OP: "",
+      service: "aucun",
+      assure: "Non",
       total_OP: "",
       remise_OP: "",
-      dette_OP: ""
-    }));
+      dette_OP: "",
+      jeton_OP: autoGenJeton(),
+      isLaboratorized: "En attente",
+      servicesDetails: [],
+      examensDetails: []
+    });
     
     setSearchResults(null);
     setSelectedExamens([]);
@@ -629,8 +635,8 @@ const MG_Caisse = ({ socket, user }) => {
           socket.emit("labo_supplementaire", dataToSend);
         }
         
-        // Après enregistrement réussi, réinitialiser partiellement
-        handlePostSaveReset();
+        // NE PAS APPELER clearForm ICI ! Seulement réinitialiser les champs sauf les IDs
+        resetFormAfterSuccess(nextNum);
         
       } else {
         const errorMsg = response?.message || "Erreur inconnue";
@@ -640,12 +646,12 @@ const MG_Caisse = ({ socket, user }) => {
     });
   };
 
-  // Fonction de réinitialisation après sauvegarde
-  const handlePostSaveReset = () => {
-    // Garder le même numéro client et CSR ID
-    const currentNum = formData.numClient;
-    const currentCSR = formData.numID_CSR;
+  // ========== NOUVELLE FONCTION : RÉINITIALISATION APRÈS SUCCÈS ==========
+  const resetFormAfterSuccess = (nextClientNumber) => {
+    // Générer le prochain CSR ID
+    const nextCSRID = generateCSRID(nextClientNumber);
     
+    // Réinitialiser seulement les champs sauf les IDs
     setFormData(prev => ({
       ...prev,
       nomClient: '',
@@ -661,32 +667,19 @@ const MG_Caisse = ({ socket, user }) => {
       jeton_OP: autoGenJeton(),
       isLaboratorized: "En attente",
       servicesDetails: [],
-      examensDetails: []
+      examensDetails: [],
+      // MAIS GARDER LES NOUVEAUX IDs
+      numClient: nextClientNumber,
+      numID_CSR: nextCSRID
     }));
     
-    setSearchResults(null);
+    // Réinitialiser les sélections
     setSelectedExamens([]);
     setServicesSelectionnes([]);
+    setSearchResults(null);
     
-    // MAIS générer un nouveau jeton
-    setFormData(prev => ({
-      ...prev,
-      jeton_OP: autoGenJeton()
-    }));
-    
-    // Mettre à jour les IDs pour le prochain patient
-    const nextNum = currentNum + 1;
-    const nextCSR = generateCSRID(nextNum);
-    
-    setFormData(prev => ({
-      ...prev,
-      numClient: nextNum,
-      numID_CSR: nextCSR
-    }));
-    
-    // Sauvegarder pour la prochaine fois
-    localStorage.setItem('nextClientNumber', nextNum.toString());
-    localStorage.setItem('lastCSRID', nextCSR);
+    console.log(`🔄 Formulaire réinitialisé pour le prochain patient: ${nextClientNumber} - ${nextCSRID}`);
+    showNotification(`Prêt pour le prochain patient (ID: ${nextCSRID})`, 'info');
   };
 
   // ========== FONCTION POUR RÉGÉNÉRER LES IDs MANUELLEMENT ==========
@@ -1370,10 +1363,15 @@ const MG_Caisse = ({ socket, user }) => {
           
           <div className='ftt__footer BC sep no-print'>
             <button 
-              className="glow-on-hover MenuBtn" 
+              className={`glow-on-hover MenuBtn ${!isConnected ? 'btn-disabled' : ''}`} 
               type="button" 
               onClick={handleSubmit}
               disabled={!isConnected}
+              style={{
+                backgroundColor: !isConnected ? '#6c757d' : '',
+                cursor: !isConnected ? 'not-allowed' : 'pointer',
+                opacity: !isConnected ? 0.6 : 1
+              }}
             >
               {isConnected ? 'Enregistrer' : '⚠️ Déconnecté'}
             </button>
@@ -1433,6 +1431,40 @@ const MG_Caisse = ({ socket, user }) => {
           )}
         </div>
       )}
+      
+      {/* CSS inline pour les styles supplémentaires */}
+      <style>{`
+        .btn-disabled {
+          opacity: 0.6;
+          cursor: not-allowed !important;
+          background-color: #6c757d !important;
+        }
+        
+        .btn-disabled:hover {
+          transform: none !important;
+          box-shadow: none !important;
+        }
+        
+        .connection-indicator {
+          margin-left: 15px;
+          padding: 3px 8px;
+          border-radius: 3px;
+          font-size: 12px;
+          font-weight: bold;
+        }
+        
+        .connection-indicator.connected {
+          background-color: #d4edda;
+          color: #155724;
+          border: 1px solid #c3e6cb;
+        }
+        
+        .connection-indicator.disconnected {
+          background-color: #ffeaa7;
+          color: #856404;
+          border: 1px solid #ffd166;
+        }
+      `}</style>
     </>
   );
 };
