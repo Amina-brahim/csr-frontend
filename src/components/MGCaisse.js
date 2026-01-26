@@ -166,6 +166,29 @@ const MG_Caisse = ({ socket, user }) => {
     examensDetails: []
   });
 
+  // ========== FONCTIONS POUR AJOUTER AUX JOURNAUX ==========
+  
+  // Fonction pour ajouter une entrée à un journal spécifique
+  const addToJournal = useCallback((journalType, entry) => {
+    if (!socket) {
+      console.error('❌ Socket non disponible pour ajouter au journal');
+      return;
+    }
+    
+    console.log(`📝 Tentative d'ajout au journal ${journalType}:`, entry);
+    
+    socket.emit('add_to_journal', {
+      journalType: journalType,
+      entry: entry
+    }, (response) => {
+      if (response && response.success) {
+        console.log(`✅ Entrée ajoutée au journal ${journalType}`);
+      } else {
+        console.error(`❌ Erreur ajout au journal ${journalType}:`, response?.message || 'Erreur inconnue');
+      }
+    });
+  }, [socket]);
+
   // ========== FONCTIONS RAPIDES POUR LA MODALE ==========
   
   const handleServiceChange = (e) => {
@@ -324,6 +347,7 @@ const MG_Caisse = ({ socket, user }) => {
     showNotification('Formulaire réinitialisé', 'info');
   };
 
+  // Fonction principale pour gérer l'enregistrement
   const handleSubmit = (e) => {
     e.preventDefault();
     
@@ -347,13 +371,53 @@ const MG_Caisse = ({ socket, user }) => {
       caisseUser: currentUser ? currentUser.username : 'Utilisateur inconnu',
       caisseService: 'Caisse',
       servicesSelectionnes: servicesSelectionnes,
-      examensSelectionnes: selectedExamens
+      examensSelectionnes: selectedExamens,
+      dateCreation: new Date().toISOString()
     };
+    
+    console.log('📤 Envoi des données patient:', dataToSend);
     
     socket.emit("labo", dataToSend, (response) => {
       if (response && response.success) {
         showNotification("Patient enregistré avec succès!", "success");
         
+        // AJOUTER LES ENTREES AUX JOURNAUX SPÉCIFIQUES
+        servicesSelectionnes.forEach(service => {
+          try {
+            const journalEntry = {
+              ...dataToSend,
+              numClient: response.numClient || dataToSend.numClient,
+              service: service.value,
+              serviceName: service.name,
+              dateService: new Date().toISOString(),
+              caisseUser: currentUser ? currentUser.username : 'Utilisateur inconnu',
+              patientName: dataToSend.nomClient,
+              patientId: dataToSend.numID_CSR,
+              totalAmount: dataToSend.total_OP,
+              examens: selectedExamens.filter(e => e.service === service.value),
+              timestamp: new Date().toISOString()
+            };
+            
+            // Ajouter au journal approprié
+            switch (service.value) {
+              case 'laboratoire':
+                addToJournal('laboratoire', journalEntry);
+                break;
+              case 'consultation':
+                addToJournal('consultation', journalEntry);
+                break;
+              case 'caisse':
+                addToJournal('caisse', journalEntry);
+                break;
+              // Ajouter d'autres services si nécessaire
+            }
+            
+          } catch (error) {
+            console.error(`❌ Erreur ajout au journal ${service.value}:`, error);
+          }
+        });
+        
+        // Ancien code pour le labo supplémentaire (à conserver si nécessaire)
         if (servicesSelectionnes.some(s => s.value === "laboratoire")) {
           socket.emit("labo_supplementaire", dataToSend);
         }
